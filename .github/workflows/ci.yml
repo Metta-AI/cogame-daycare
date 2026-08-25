@@ -328,17 +328,34 @@ jobs:
       # ANTHROPIC_API_KEY, so every seat plays a scripted baseline and the
       # replay above carries ZERO LLM text: nothing that plays it can draw the
       # chrome that shows a hunch or a notes row. tools/ci/renderer_fixture.html
-      # loads the REAL chrome_common.js and broadcast_core.js with a full-cap
-      # 80-rune hunch and 240-rune notes on BOTH seats, a 15-chip guess tape and
-      # the secret panel, at 360 / 620 / 1152 px, and self-checks its own string
-      # lengths (cogchemists, 2026-08-24).
+      # loads the SHIPPED client/replay_broadcast.html -- spliced exactly as
+      # Dockerfile.replay-viewer splices it, with the real chrome_common.js and
+      # broadcast_core.js -- in an iframe at 360 / 620 / 1152 px of VIEWPORT
+      # width, with a full-cap 80-rune hunch and 240-rune notes on BOTH seats, a
+      # 15-chip guess tape and the secret panel, and asserts the shipped boxes
+      # hold them: nothing crosses a viewport edge, nothing leaves the board
+      # region, nothing overflows its own box, and the shipped
+      # @media (max-width: 640px) rule is the one deciding the 360 px collapse
+      # (cogchemists, 2026-08-24; r1 review N13/C3).
+      #
+      # It is SERVED over local HTTP, not opened as file://: the fixture fetches
+      # the shipped page to splice it, and Chromium blocks fetch() of a file://
+      # URL.
       - name: Render the worst-case chrome fixture
         run: |
           set -euo pipefail
           test -s tools/ci/renderer_fixture.html
           mkdir -p fixture-evidence
+          python3 -m http.server 8731 --bind 127.0.0.1 > fixture-evidence/http.log 2>&1 &
+          server=$!
+          trap 'kill "${server}" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            if curl -fsS -o /dev/null \
+              "http://127.0.0.1:8731/tools/ci/renderer_fixture.html"; then break; fi
+            sleep 0.2
+          done
           node tools/ci/viewer_smoke.mjs \
-            --url "file://$PWD/tools/ci/renderer_fixture.html" \
+            --url "http://127.0.0.1:8731/tools/ci/renderer_fixture.html" \
             --timeout 60 \
             --strict-text-bounds \
             --out fixture-evidence
