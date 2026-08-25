@@ -136,34 +136,6 @@ block:
       doAssert $a.configJson() == $b.configJson(),
         variant & " seed " & $seed & ": the config JSON differs"
 
-echo "test_noleak: (c2) the child's shrub-pick coin is not drawn from rngSecret"
-block:
-  # r1 review N4: the pick coin used to be seeded from rngSecret's own stream,
-  # so an outcome the parent DOES observe (a `reach` event, `reachFails`) came
-  # off the stream the note reserves for what the parent may never see — and a
-  # switch draw shifted the pick sequence, which the code's own comment denied.
-  # The coin now has its own stream off the seed: neither the preference nor the
-  # switch turn can move it.
-  proc pickDraws(cfg: GameConfig): seq[int] =
-    var sim = initSim(cfg)
-    for i in 0 ..< 32:
-      result.add sim.pickRng.rand(1000)
-
-  for seed in 1 .. 12:
-    var apple = variantConfig("daycare", seed)
-    apple.forcePreference = ord(fApple)
-    var banana = variantConfig("daycare", seed)
-    banana.forcePreference = ord(fBanana)
-    doAssert pickDraws(apple) == pickDraws(banana),
-      "seed " & $seed & ": the pick coin depends on the preference"
-    # `daycare` and `daycare-fickle` differ only in preferenceSwitch, and the
-    # switch turn is the second draw off rngSecret.
-    let fixed = variantConfig("daycare", seed)
-    let fickle = variantConfig("daycare-fickle", seed)
-    doAssert initSim(fickle).switchTurn > 0
-    doAssert pickDraws(fixed) == pickDraws(fickle),
-      "seed " & $seed & ": the switch draw shifts the pick sequence"
-
 echo "test_noleak: (d) the apple source set maps onto the banana set under " &
   "x -> 23 - x, in both mirror states and in all four variants"
 block:

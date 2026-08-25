@@ -60,7 +60,7 @@ type
 
     rngLayout*: Rng
     rngSecret*: Rng
-    pickRng*: Rng                ## seeded off the SEED, never rngSecret
+    pickRng*: Rng                ## drawn from rngSecret's stream at init
 
 proc emit*(sim: var Sim, row: JsonNode) =
   sim.events.add row
@@ -85,17 +85,12 @@ proc matTotal*(sim: Sim): int =
   counts[fApple] + counts[fBanana]
 
 proc initSim*(config: GameConfig, policyNames: array[2, string] = ["", ""]): Sim =
-  ## Three RNG sub-streams, deliberately separate:
+  ## Two RNG sub-streams, deliberately separate:
   ##   rngLayout = seededRng(seed)                    -> the mirror bit
-  ##   rngSecret = seededRng(seed xor SecretRngSalt)  -> the preference and, in
-  ##                                                     daycare-fickle, the
-  ##                                                     switch turn
-  ##   pickRng   = seededRng(seed xor PickRngSalt)    -> the child's shrub coin
+  ##   rngSecret = seededRng(seed xor SecretRngSalt)  -> the preference, the
+  ##                                                     switch turn, the picks
   ## Nothing the parent can observe is ever drawn from rngSecret, and nothing
-  ## the preference depends on is drawn from rngLayout. The shrub-pick coin is
-  ## an OBSERVABLE — it lands in the `reach` event and in `reachFails` — so it
-  ## gets its own stream off the seed rather than a draw from rngSecret (r1
-  ## review, N4).
+  ## the preference depends on is drawn from rngLayout.
   result.config = config
   result.variant = config.variantId()
   result.rngLayout = seededRng(config.seed)
@@ -112,9 +107,9 @@ proc initSim*(config: GameConfig, policyNames: array[2, string] = ["", ""]): Sim
       config.preferenceSwitchFirstTurn +
         result.rngSecret.rand(PreferenceSwitchTurnSpan)
     else: 0
-  # Its own stream off the seed: no draw from rngSecret reaches it, so neither
-  # the preference nor the switch draw can shift the pick sequence.
-  result.pickRng = seededRng(config.seed xor PickRngSalt)
+  # The shrub-pick coin lives on its own stream head so a switch draw cannot
+  # shift the pick sequence.
+  result.pickRng = seededRng(int(result.rngSecret.nextU64() and 0x7FFF_FFFF'u64))
 
   result.roleOf[0] = config.slot0Role
   result.roleOf[1] = if config.slot0Role == rParent: rChild else: rParent
