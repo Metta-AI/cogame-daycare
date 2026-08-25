@@ -1,0 +1,458 @@
+<!doctype html>
+<!-- ============================================================
+     Daycare worst-case RENDERER FIXTURE (design note ## Tests, item 10).
+
+     Why this file exists: tools/ci/docker_smoke.sh runs with NO
+     ANTHROPIC_API_KEY, so every seat plays a scripted baseline, a scripted
+     baseline emits a short fixed `hunch` and an empty `notes`, and therefore
+     EVERY REPLAY CI PRODUCES CARRIES ZERO LLM TEXT. Nothing that plays that
+     replay can draw the chrome that shows LLM text -- the secret panel's
+     hunch line, the feed's expanded notes row -- so the wasm-viewer job would
+     go green over a layout that breaks the moment a real champion plays
+     (cogchemists, 2026-08-24).
+
+     What it does: loads the REAL client/chrome_common.js and the REAL
+     client/broadcast_core.js, gives the chrome a synthetic Daycare state frame
+     whose `hunch` is exactly 80 runes and whose `notes` is exactly 240 runes on
+     BOTH seats, renders the secret panel with a full 15-chip guess tape, drives
+     the board compositor with a synthetic sprite packet at several canvas
+     widths INCLUDING 360 px (the featured-match iframe), self-checks its own
+     string lengths, and then sets data-replay-loaded="true" -- so
+     `viewer_smoke.mjs --strict-text-bounds` can measure it exactly as it
+     measures a real replay.
+
+     Run:  node tools/ci/viewer_smoke.mjs --url "file://$PWD/tools/ci/renderer_fixture.html" --strict-text-bounds
+     ============================================================ -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Daycare renderer fixture</title>
+<style>
+  :root {
+    --u: 1px; --hudscale: 1; --band: 46px; --topband: 40px;
+    --paper: #f2e8d8; --paper-dim: #b9c9ad; --amber: #e8a33d;
+    --red: #e0523a; --blue: #3f7cc4; --ink-soft: rgba(14, 10, 6, 0.82);
+    --pixfont: ui-monospace, monospace; --finefont: ui-sans-serif, sans-serif;
+    color-scheme: dark;
+  }
+  body { margin: 0; background: #0d150b; color: var(--paper);
+         font: 13px var(--finefont); }
+  #stage { position: relative; width: 1152px; height: 760px; margin: 0 auto; }
+  #board { display: block; width: 100%; height: 672px; background: #10180c;
+           image-rendering: pixelated; }
+  #chrome { position: absolute; inset: 0; }
+  #scorebug { position: absolute; top: 0; left: 0; right: 0; height: 40px;
+              display: flex; align-items: center; justify-content: center;
+              gap: 12px; background: rgba(10, 8, 5, 0.8); }
+  .plates { display: flex; gap: 8px; }
+  .plate { display: flex; gap: 6px; align-items: center; padding: 2px 8px;
+           border-left: 3px solid var(--tc, var(--amber)); }
+  .plate.parent { --tc: #4a7ad6; }
+  .plate.child { --tc: #e0b23c; }
+  .team-id { display: flex; flex-direction: column; }
+  .lives-line { display: flex; gap: 6px; align-items: baseline; }
+  .plate-name, .plate .team-name { flex: 1 1 auto; min-width: 3.2em;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lives-label { font-size: 8px; color: var(--paper-dim); }
+  .lives-num { font-family: var(--pixfont); font-size: 18px; }
+  .plate-sub { font-size: 8px; color: var(--paper-dim); max-width: 150px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flagicon, .squad, .hcap { display: none; }
+  .clock { text-align: center; }
+  .time { font-family: var(--pixfont); font-size: 16px; }
+  .caption { font-size: 9px; color: var(--paper-dim); }
+  #transport { position: absolute; left: 0; right: 0; bottom: 0; height: 46px;
+               background: rgba(10, 8, 5, 0.9); font-family: var(--pixfont);
+               font-size: 10px; }
+  .tbtn, .chip { background: rgba(255,255,255,.07); color: var(--paper);
+                 border: 0; padding: 2px 6px; font: inherit; }
+  .scrub { position: relative; height: 18px; margin: 4px 6px;
+           background: rgba(255,255,255,.08); }
+  .momentum { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .scrub-fill { position: absolute; top: 0; bottom: 0; left: 0;
+                background: rgba(232,163,61,.35); }
+  .scrub-head { position: absolute; top: 0; bottom: 0; width: 2px;
+                background: var(--paper); }
+  .beat-marker { position: absolute; top: 0; bottom: 0; width: 2px;
+                 background: var(--paper); pointer-events: auto; cursor: pointer;
+                 border: 0; padding: 0; }
+  .beat-marker.turn { background: rgba(242,232,216,.5); }
+  .beat-marker.guess { background: #4a7ad6; }
+  .beat-marker.switch { background: #b25fd0; width: 3px; }
+  .beat-marker.feast { background: #45a85e; }
+  .beat-marker.gameover { background: var(--amber); width: 3px; }
+  #killfeed { position: absolute; right: 8px; bottom: 60px; width: 44%;
+              display: flex; flex-direction: column; gap: 3px; }
+  .feed-row { background: var(--ink-soft); padding: 2px 6px; font-size: 10px;
+              display: flex; gap: 5px; }
+  .feed-row .who { color: var(--paper); }
+  .feed-row .notes { color: var(--paper-dim); font-size: 9px;
+                     overflow-wrap: anywhere; }
+  #care-layer { position: absolute; inset: var(--topband) 0 var(--band) 0;
+                pointer-events: none; overflow: hidden; }
+  #care-secret { position: absolute; top: 8px; right: 10px; min-width: 150px;
+                 padding: 6px 9px; background: var(--ink-soft);
+                 border-left: 3px solid var(--amber);
+                 font-family: var(--pixfont); font-size: 10px;
+                 text-transform: uppercase; }
+  .care-row { display: flex; gap: 5px; align-items: baseline; }
+  .care-k { font-size: 8px; color: var(--paper-dim); }
+  .care-state { margin-left: auto; font-size: 9px; padding: 0 4px; }
+  .care-state.right { background: #2f7a44; }
+  .care-state.wrong { background: #a83c2c; }
+  .care-hunch { font-size: 9px; color: var(--paper-dim);
+                text-transform: none; overflow-wrap: anywhere; max-width: 22em; }
+  .care-tape { display: flex; gap: 2px; margin-top: 3px; }
+  .care-chip { width: 8px; height: 8px; min-width: 6px; min-height: 6px;
+               background: rgba(242,232,216,.22); }
+  .care-chip.right { background: #45a85e; }
+  .care-chip.wrong { background: #e0523a; }
+  #care-roster { position: absolute; left: 10px; top: 8px; font-size: 8px;
+                 color: var(--paper-dim); text-transform: uppercase; }
+  #endcard { display: none; }
+  #status { position: absolute; left: 6px; bottom: 2px; font-size: 9px;
+            color: var(--paper-dim); }
+  #status.show { color: var(--red); }
+  #sizes { text-align: center; font-family: var(--pixfont); font-size: 11px;
+           padding: 6px; color: var(--paper-dim); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="board" width="1152" height="672"></canvas>
+  <div id="chrome">
+    <div id="scorebug">
+      <div class="plates" id="plates-l"></div>
+      <div class="clock" id="clock">
+        <div class="time" id="clock-time">0:00</div>
+        <span class="ffwd-mini" id="ffwd-mini"></span>
+        <div class="caption" id="clock-caption"></div>
+      </div>
+      <div class="plates" id="plates-r"></div>
+    </div>
+
+    <div id="care-layer">
+      <div id="care-secret">
+        <div class="care-row care-wants">
+          <span class="care-k" id="care-wants-k">WANTS</span>
+          <span class="care-v" id="care-pref">&mdash;</span>
+        </div>
+        <div class="care-row care-guess">
+          <span class="care-k" id="care-guess-k">GUESSES</span>
+          <span class="care-v" id="care-guess">&mdash;</span>
+          <span class="care-state" id="care-state"></span>
+        </div>
+        <div class="care-tally" id="care-tally"></div>
+        <div class="care-hunch" id="care-hunch"></div>
+        <div class="care-tape" id="care-tape"></div>
+      </div>
+      <div id="care-roster"></div>
+    </div>
+
+    <div id="killfeed"></div>
+
+    <div id="transport">
+      <div>
+        <button class="tbtn" id="btn-play">&#9654;</button>
+        <button class="tbtn" id="btn-restart">&#8634;</button>
+        <button class="tbtn" id="btn-back">&#9666;|</button>
+        <button class="tbtn" id="btn-fwd">+5s</button>
+        <button class="tbtn" id="btn-end">|&#9656;</button>
+        <button class="tbtn" id="btn-loop">&#8635;</button>
+        <button class="tbtn" id="btn-skip">&#9656;&#9656;</button>
+        <button class="tbtn" id="btn-spoilers">spoilers</button>
+        <span class="ffwd-chip" id="ffwd-chip"></span>
+        <span class="win-chip" id="win-chip"></span>
+        <span class="tick-clock" id="tick-clock">0 / 0</span>
+        <span class="speedchips" id="speedchips"></span>
+      </div>
+      <div class="scrub" id="scrub">
+        <svg class="momentum" id="momentum" viewBox="0 0 1000 100"
+             preserveAspectRatio="none"></svg>
+        <div class="scrub-fill" id="scrub-fill"></div>
+        <div id="lulls"></div>
+        <div class="scrub-win" id="scrub-win"></div>
+        <div class="scrub-head" id="scrub-head"></div>
+      </div>
+    </div>
+    <div id="endcard"></div>
+    <div id="status"></div>
+  </div>
+</div>
+<div id="sizes">canvas widths exercised: <span id="sizes-list">-</span></div>
+
+<script>window.CTF_WIRE = { speeds: [1,2,3,4,8,16], fps: 24, chromeSpriteId: 4090, shotFxTicks: 3, shotTrailFalloff: 2 };</script>
+<script src="../../client/chrome_common.js"></script>
+<script src="../../client/broadcast_core.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TURNS = 15;
+  // Exactly the design note's caps, in RUNES. The fixture self-checks these:
+  // a cap change that is not mirrored here fails the job instead of quietly
+  // shipping a layout nobody measured.
+  var HUNCH_CAP = 80;
+  var NOTES_CAP = 240;
+
+  function repeatTo(seed, runes) {
+    var out = '';
+    while (Array.from(out).length < runes) out += seed;
+    return Array.from(out).slice(0, runes).join('');
+  }
+  // Multi-byte runes on purpose: the recorded strings are rune-truncated, so a
+  // full-cap string is 80 RUNES and can be far more than 80 bytes.
+  var HUNCH = repeatTo('it only ever reaches for bananas — ünïcödé ', HUNCH_CAP);
+  var NOTES = repeatTo('turn 3 it walked over an apple twice and refused it — ünïcödé ', NOTES_CAP);
+
+  function fail(message) {
+    document.documentElement.setAttribute('data-replay-error', String(message));
+    var status = document.getElementById('status');
+    if (status) { status.textContent = 'fixture failed: ' + message; status.classList.add('show'); }
+    throw new Error(message);
+  }
+
+  if (Array.from(HUNCH).length !== HUNCH_CAP) fail('hunch fixture is not ' + HUNCH_CAP + ' runes');
+  if (Array.from(NOTES).length !== NOTES_CAP) fail('notes fixture is not ' + NOTES_CAP + ' runes');
+  if (!window.ChromeCommon) fail('chrome_common.js did not load');
+  if (!window.BroadcastCore) fail('broadcast_core.js did not load');
+
+  // ---- a worst-case Daycare state frame --------------------------------
+  var tape = [];
+  for (var i = 0; i < TURNS; i++) tape.push(i < 11 ? (i % 3 === 2 ? 0 : 1) : -1);
+  var pts = [];
+  for (var t = 0; t <= 900; t += 1) pts.push([t, Math.floor(t / 20), Math.floor(t / 20)]);
+  var beats = [
+    { t: 60, k: 'turn', n: 1 }, { t: 120, k: 'guess', g: 'banana', ok: true },
+    { t: 300, k: 'feast', n: 3 }, { t: 420, k: 'switch', g: 'apple' },
+    { t: 899, k: 'gameover' }
+  ];
+  var events = [
+    { k: 'order', t: 660, seat: 0, turn: 12, role: 'parent', job: 'provide',
+      f: 'banana', guess: 'banana', source: 'llm', hunch: HUNCH, notes: NOTES },
+    { k: 'order', t: 660, seat: 1, turn: 12, role: 'child', job: 'show',
+      f: 'banana', guess: '', source: 'llm', hunch: HUNCH, notes: NOTES },
+    { k: 'eat', t: 664, seat: 1, f: 'banana', pref: true, pts: 3 },
+    { k: 'reach', t: 668, seat: 1, f: 'banana', src: 'T4', kind: 'tall', n: 8 }
+  ];
+  var state = {
+    ph: 'playing', t: 700, mx: 900, st: 0, mt: 900, sp: 1, pl: true, en: true,
+    lp: false, sk: false, ff: false, lob: 0, hold: 0, pov: -1, mm: -1,
+    turn: 12, turns: TURNS, ticksPerTurn: 60, variant: 'daycare-fickle',
+    par: 30, scores: [41, 41],
+    teams: {
+      parent: { lives: 41, policies: ['Parent'], flag: 'home', carrier: -1 },
+      child: { lives: 41, policies: ['Child'], flag: 'home', carrier: -1 }
+    },
+    roster: [
+      { s: 0, name: 'Alder', pol: 'daycare-attentive', team: 'parent',
+        lives: 0, alive: true, carry: true, k: 0, d: 0, a: 0, pk: [] },
+      { s: 1, name: 'Bramble', pol: 'daycare-provider', team: 'child',
+        lives: 0, alive: true, carry: false, k: 0, d: 0, a: 0, pk: [] }
+    ],
+    lead: { teams: ['parent', 'child'], pts: pts },
+    beats: beats, lulls: [], events: events,
+    secret: { pref: 'banana', guess: 'apple', right: false, tape: tape,
+              rightTurns: 7 }
+  };
+
+  var chrome = window.ChromeCommon({
+    send: function () {},
+    sendPov: function () {},
+    getState: function () { return state; }
+  });
+
+  // ---- the chrome the design note's ## Viewer section owns --------------
+  function plate(side, team, headline) {
+    var host = document.getElementById(side);
+    var el = document.createElement('div');
+    el.className = 'plate ' + team;
+    el.setAttribute('data-team', team);
+    el.innerHTML =
+      '<div class="flagicon"></div><div class="team-id"><div class="lives-line">' +
+      '<span class="team-name plate-name" id="name-' + team + '">' + headline + '</span>' +
+      '<span class="lives-label">Score</span>' +
+      '<span class="lives-num" id="lives-' + team + '">&mdash;</span>' +
+      '</div><div class="squad" id="squad-' + team + '"></div></div>';
+    host.appendChild(el);
+  }
+  plate('plates-l', 'child', 'CHILD');
+  plate('plates-r', 'parent', 'PARENT');
+
+  function careSecret(s) {
+    var secret = s.secret;
+    document.getElementById('care-wants-k').textContent = 'BRAMBLE WANTS';
+    document.getElementById('care-guess-k').textContent = 'ALDER GUESSES';
+    document.getElementById('care-pref').textContent = '\u{1F34C} ' + secret.pref.toUpperCase();
+    document.getElementById('care-guess').textContent = '\u{1F34E} ' + secret.guess.toUpperCase();
+    var st = document.getElementById('care-state');
+    st.textContent = secret.right ? 'RIGHT' : 'WRONG';
+    st.className = 'care-state ' + (secret.right ? 'right' : 'wrong');
+    document.getElementById('care-tally').textContent =
+      'RIGHT ' + secret.rightTurns + ' / ' + secret.tape.length + ' TURNS';
+    document.getElementById('care-hunch').textContent = HUNCH;
+    var host = document.getElementById('care-tape');
+    host.innerHTML = '';
+    secret.tape.forEach(function (v) {
+      var chip = document.createElement('span');
+      chip.className = 'care-chip' + (v === 1 ? ' right' : v === 0 ? ' wrong' : '');
+      host.appendChild(chip);
+    });
+    if (host.children.length !== TURNS) fail('guess tape is not ' + TURNS + ' chips');
+    document.getElementById('care-roster').innerHTML = s.roster.map(function (p) {
+      return '<div class="care-seat ' + p.team + '"><b>' + p.name.toUpperCase() +
+        '</b> ' + p.pol + '</div>';
+    }).join('');
+  }
+
+  function careFeedRows(s) {
+    var host = document.getElementById('killfeed');
+    host.innerHTML = '';
+    s.events.forEach(function (e) {
+      var row = document.createElement('div');
+      row.className = 'feed-row';
+      if (e.k === 'order') {
+        row.innerHTML = '<span class="who">' + (e.seat === 0 ? 'ALDER' : 'BRAMBLE') +
+          '</span><span class="glyph">\u2192</span><span class="who">' +
+          e.job.toUpperCase() + ' ' + String(e.f).toUpperCase() +
+          ' \u201c' + e.hunch + '\u201d</span>' +
+          '<span class="notes">' + e.notes + '</span>';
+      } else {
+        row.innerHTML = '<span class="who">' + JSON.stringify(e.k) + '</span>';
+      }
+      host.appendChild(row);
+    });
+  }
+
+  function careBeats(s) {
+    s.beats.forEach(function (b) { chrome.markBeat(b.t, b.k, ''); });
+  }
+
+  function carePlateNumbers(s) {
+    ['parent', 'child'].forEach(function (team) {
+      var el = document.getElementById('lives-' + team);
+      if (el) el.textContent = String(s.teams[team].lives);
+      var plate = document.querySelector('.plate[data-team="' + team + '"] .team-id');
+      if (!plate) return;
+      var sub = plate.querySelector('.plate-sub');
+      if (!sub) {
+        sub = document.createElement('span');
+        sub.className = 'plate-sub';
+        plate.appendChild(sub);
+      }
+      var seat = s.roster.filter(function (p) { return p.team === team; })[0];
+      sub.textContent = seat ? (seat.name.toUpperCase() + ' \u00b7 ' + seat.pol) : '';
+    });
+  }
+
+  function careClock(s) {
+    document.getElementById('clock-time').textContent =
+      'TURN ' + s.turn + ' / ' + s.turns;
+    document.getElementById('clock-caption').textContent =
+      'tick ' + s.t + ' of ' + s.mx;
+  }
+
+  // ---- the real board compositor, driven by a synthetic packet ---------
+  function u16(a, v) { a.push(v & 255, (v >> 8) & 255); }
+  function i16(a, v) { u16(a, v < 0 ? v + 0x10000 : v); }
+  function u32(a, v) { a.push(v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255); }
+
+  function spriteMessage(out, id, w, h, rgba, label) {
+    out.push(0x01);
+    u16(out, id); u16(out, w); u16(out, h);
+    var packed = window.SnappyJS.compress(rgba);
+    var bytes = packed instanceof Uint8Array ? packed : new Uint8Array(packed);
+    u32(out, bytes.length);
+    for (var i = 0; i < bytes.length; i++) out.push(bytes[i]);
+    var enc = new TextEncoder().encode(label || '');
+    u16(out, enc.length);
+    for (var k = 0; k < enc.length; k++) out.push(enc[k]);
+  }
+
+  function buildPacket(chromeJson) {
+    var out = [];
+    out.push(0x06, 0, 0, 1);                       // layer 0: map, zoomable
+    out.push(0x05, 0); u16(out, 1152); u16(out, 672);
+    var tile = new Uint8Array(48 * 48 * 4);
+    for (var i = 0; i < 48 * 48; i++) {
+      tile[i * 4] = 104; tile[i * 4 + 1] = 158; tile[i * 4 + 2] = 74;
+      tile[i * 4 + 3] = 255;
+    }
+    spriteMessage(out, 30, 48, 48, tile, 'yard band 0');
+    out.push(0x02); u16(out, 40); i16(out, 0); i16(out, 0); i16(out, -32768);
+    out.push(0); u16(out, 30);
+    var cog = new Uint8Array(40 * 40 * 4);
+    for (var j = 0; j < 40 * 40; j++) {
+      cog[j * 4] = 74; cog[j * 4 + 1] = 122; cog[j * 4 + 2] = 214;
+      cog[j * 4 + 3] = 255;
+    }
+    spriteMessage(out, 601, 40, 40, cog, 'cog_parent_front x40');
+    out.push(0x02); u16(out, 400); i16(out, 560); i16(out, 380); i16(out, 40);
+    out.push(0); u16(out, 601);
+    // The chrome rides the LABEL of the reserved 1x1 sprite 4090 -- the binary
+    // channel that survives a hosted replay.
+    spriteMessage(out, 4090, 1, 1, new Uint8Array(4), chromeJson);
+    return new Uint8Array(out);
+  }
+
+  var texts = [];
+  var core = window.BroadcastCore.create({
+    canvas: document.getElementById('board'),
+    websocket: false,
+    playoutBuffer: false,
+    viewportWidth: 1152,
+    viewportHeight: 672,
+    devicePixelRatio: 1,
+    onText: function (txt) { texts.push(txt); },
+    onStatus: function () {},
+    onFirstFrame: function () {}
+  });
+  core.start();
+
+  var WIDTHS = [360, 620, 1152];
+  var done = [];
+
+  function renderAt(width, next) {
+    var stage = document.getElementById('stage');
+    stage.style.width = width + 'px';
+    var scale = Math.max(0.5, Math.min(1.6, width / 760));
+    document.documentElement.style.setProperty('--hudscale', scale.toFixed(3));
+    document.documentElement.style.setProperty('--u', (1 * scale).toFixed(3) + 'px');
+    stage.classList.toggle('tiny', width <= 620);
+    core.setViewportSize(width, Math.round(width * 672 / 1152), 1);
+    core.ingest(buildPacket(JSON.stringify(state)));
+    careBeats(state);
+    chrome.renderClock(state);
+    chrome.renderTransport(state);
+    careSecret(state);
+    careFeedRows(state);
+    carePlateNumbers(state);
+    careClock(state);
+    done.push(width);
+    document.getElementById('sizes-list').textContent = done.join(' / ');
+    requestAnimationFrame(function () { requestAnimationFrame(next); });
+  }
+
+  function step(index) {
+    if (index >= WIDTHS.length) {
+      if (texts.length === 0) fail('the chrome label never reached onText');
+      // First fully drawn frame at every width: this is the signal
+      // tools/ci/viewer_smoke.mjs waits for.
+      document.documentElement.setAttribute('data-replay-loaded', 'true');
+      document.getElementById('status').textContent =
+        'fixture ok: ' + done.join('/') + ' px, hunch ' + HUNCH_CAP +
+        ' runes, notes ' + NOTES_CAP + ' runes, ' + TURNS + ' chips';
+      return;
+    }
+    renderAt(WIDTHS[index], function () { step(index + 1); });
+  }
+
+  try {
+    step(0);
+  } catch (error) {
+    fail(error && error.message ? error.message : String(error));
+  }
+})();
+</script>
+</body>
+</html>

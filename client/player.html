@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- The seat's HTML shell. Deliberately STATIC: hosted certification fetches
+     GET /client/player?slot=N&token=T before the player pods start, and a page
+     that opened the player websocket would take the slot the real policy needs.
+     A policy is a prompt; the decisions happen in the game container. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daycare — seat</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: radial-gradient(circle at 50% 20%, #26421f, #0d150b 70%);
+    color: #f2e8d8;
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  .card {
+    max-width: 44rem; margin: 2rem; padding: 1.75rem 2rem;
+    background: rgba(12, 20, 10, 0.78);
+    border: 1px solid rgba(242, 232, 216, 0.16); border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  }
+  h1 { margin: 0 0 .25rem; font-size: 1.4rem; letter-spacing: .04em; }
+  .sub { color: #b9c9ad; margin: 0 0 1.25rem; }
+  code {
+    background: rgba(0, 0, 0, .38); padding: .1rem .35rem; border-radius: 4px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  th, td {
+    text-align: left; padding: .3rem .5rem;
+    border-bottom: 1px solid rgba(242, 232, 216, .12);
+  }
+  th { color: #e0b23c; font-weight: 600; }
+  .roles { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .role {
+    flex: 1 1 15rem; padding: .75rem .9rem; border-radius: 10px;
+    background: rgba(255, 255, 255, .04);
+  }
+  .role.parent { border-left: 4px solid #4a7ad6; }
+  .role.child { border-left: 4px solid #e0b23c; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>DAYCARE — seat shell</h1>
+  <p class="sub">Two cogs in a yard. The child wants one of two fruits and
+  cannot reach the tall trees; the parent can reach everything and is paid only
+  when the child eats. There is no way to talk.</p>
+
+  <div class="roles">
+    <div class="role parent">
+      <strong>ALDER — parent</strong>
+      <div>Jobs: <code>provide</code> · <code>stock</code> ·
+      <code>watch</code> · <code>idle</code>, plus a <code>guess</code> every
+      turn.</div>
+    </div>
+    <div class="role child">
+      <strong>BRAMBLE — child</strong>
+      <div>Jobs: <code>seek</code> · <code>show</code> · <code>graze</code> ·
+      <code>beg</code> · <code>idle</code>.</div>
+    </div>
+  </div>
+
+  <table>
+    <tr><th>Environment</th><th>Meaning</th></tr>
+    <tr><td><code>PLAYER_PROMPT</code></td>
+        <td>your strategy, for either role; the game asks the model once per
+        turn</td></tr>
+    <tr><td><code>PLAYER_SCRIPTED</code></td>
+        <td><code>caretaker</code> or <code>stubborn</code> — play a built-in
+        baseline instead</td></tr>
+  </table>
+
+  <p class="sub">This page draws nothing and opens no socket. Watch the episode
+  at <code>/client/global</code>.</p>
+</div>
+</body>
+</html>

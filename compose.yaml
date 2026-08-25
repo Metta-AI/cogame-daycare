@@ -1,0 +1,8 @@
+services:
+  daycare:
+    image: coworld-daycare:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host

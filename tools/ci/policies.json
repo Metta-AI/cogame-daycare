@@ -1,0 +1,33 @@
+[
+  {
+    "name": "daycare-attentive",
+    "run": "/bin/daycare-player",
+    "env": {
+      "PLAYER_PROMPT": "Whichever role you draw, the game is reading the other cog. AS THE PARENT: your score is whatever the child eats, tripled when it is the fruit it secretly wants, so your whole job is to work out which fruit that is and then keep it coming. Read the behaviour table first, in this order of trust: failed reaches at tall trees (it cannot pick them, so reaching there is pure desire), then fruit it walked over WITHOUT eating (that species is the one it does not want), then ticks spent adjacent to a species, then what it actually ate. Set `guess` to the species with the most failed reaches, breaking ties with the walked-over column inverted. Then `provide` that species and keep providing it every single turn - a delivery is worth 3 and a turn spent watching is worth 0, so never `watch` twice in a row and never `stock` unless the child is standing on the mat. Never eat a fruit yourself; that is a wasted turn and a wasted fruit. If the child suddenly starts refusing what you bring, change your guess immediately. AS THE CHILD: be legible. Pick the fruit you prefer and `seek` it; when there is nothing of yours on the ground and no ripe shrub, spend the turn on `show` under a tall tree of your species - you cannot pick it, but that is the only way to tell the parent what you want. Eat your own species the instant it lands. Refuse the other species while your parent is still learning, then take it once your species is arriving reliably - 1 point is better than 0.",
+      "USE_BEDROCK": "true"
+    }
+  },
+  {
+    "name": "daycare-provider",
+    "run": "/bin/daycare-player",
+    "env": {
+      "PLAYER_PROMPT": "Play the throughput, then the guess. AS THE PARENT: count your deliveries - you get about one per turn and there are only fifteen turns, so every turn without a drop next to the child is a point you will not get back. Open with two turns of evidence-gathering while you deliver: bring one apple, then one banana, and watch which one is eaten within a few ticks and which one is stepped over. From turn three onward commit hard to the winner and stop experimenting; a wrong commitment costs you 2 points a turn, an uncommitted parent costs 1.5. State the species you have committed to in `hunch` with the evidence in one clause. Drop within one cell of the child, never on the far side of the yard - ground fruit rots in 120 ticks. Use `stock` only when the child is grazing the centre. AS THE CHILD: keep the loop short. `beg` next to the parent when it is carrying your species so it can drop and turn around; `show` under your tall tree when it is carrying the wrong one; `seek` the moment your species is on the ground. Never `graze` - indiscriminate eating teaches your parent nothing and it is the single worst thing you can do in this game.",
+      "USE_BEDROCK": "true"
+    },
+    "player": "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
+  },
+  {
+    "name": "daycare-caretaker",
+    "run": "/bin/daycare-player",
+    "env": {
+      "PLAYER_SCRIPTED": "caretaker"
+    }
+  },
+  {
+    "name": "daycare-stubborn",
+    "run": "/bin/daycare-player",
+    "env": {
+      "PLAYER_SCRIPTED": "stubborn"
+    }
+  }
+]

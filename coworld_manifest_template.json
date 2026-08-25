@@ -1,0 +1,602 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "tags": [
+    "daycare",
+    "cooperation",
+    "theory-of-mind",
+    "grid",
+    "llm-driven",
+    "melting-pot",
+    "two-player"
+  ],
+  "episode_timeout_minutes": 20,
+  "game": {
+    "name": "daycare",
+    "owner": "daveey@gmail.com",
+    "description": "Daycare: one cog can reach the fruit, the other one knows which fruit it wants, and neither can say a word. A parent and a child in a walled yard; the child cannot reach the tall trees and its preference is never shown to the parent, who is paid only when the child eats. Caregiving as a game: read another agent's goals from its actions and provide for them, with no explicit channel.",
+    "replay_viewer": {
+      "bundle": "static-replay-viewer"
+    },
+    "runnable": {
+      "type": "game",
+      "image": "{{DAYCARE_IMAGE}}",
+      "run": [
+        "/bin/daycare"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/daycare/anthropic_api_key"
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-daycare/tree/main"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "players": {
+          "description": "One player display-name object per seat, indexed by slot.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "num_agents": {
+          "description": "Seat count; injected by the commissioner. Daycare is a two-seat game: one parent, one child.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "default": 2
+        },
+        "seed": {
+          "description": "Pins the mirror bit, the child's preference and (in daycare-fickle) the switch turn. Omit for a random episode; no seat ever sees it.",
+          "type": "integer"
+        },
+        "slot0Role": {
+          "description": "Which role sits in slot 0. The aliases follow the ROLE, so Alder is always the parent and Bramble always the child.",
+          "type": "string",
+          "enum": [
+            "parent",
+            "child"
+          ],
+          "default": "parent"
+        },
+        "turns": {
+          "description": "Standing orders per seat; one turn is ticksPerTurn ticks.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 15
+        },
+        "ticksPerTurn": {
+          "description": "Ticks the kernel walks per standing order.",
+          "type": "integer",
+          "minimum": 12,
+          "maximum": 120,
+          "default": 60
+        },
+        "moveCooldown": {
+          "description": "Ticks between legal moves.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 2
+        },
+        "carryCap": {
+          "description": "Fruit a cog may hold at once.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "default": 1
+        },
+        "shrubs": {
+          "description": "Shrubs in the yard, half of each species.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 4,
+          "default": 4
+        },
+        "tallCapacity": {
+          "description": "Ripe fruit a tall tree may hold.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 3
+        },
+        "tallRegrowTicks": {
+          "description": "Ticks per new ripe fruit on a tall tree.",
+          "type": "integer",
+          "minimum": 6,
+          "maximum": 240,
+          "default": 24
+        },
+        "shrubCapacity": {
+          "description": "Ripe fruit a shrub may hold.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "default": 1
+        },
+        "shrubRegrowTicks": {
+          "description": "Ticks per new ripe fruit on a shrub.",
+          "type": "integer",
+          "minimum": 24,
+          "maximum": 960,
+          "default": 480
+        },
+        "childShrubPickPermille": {
+          "description": "Per-mille chance a child's shrub pick succeeds. The scarcity is on the child's HANDS, not on the fruit, so it leaks nothing about the preference.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 250
+        },
+        "childReachCooldownTicks": {
+          "description": "Ticks a failed shrub pick costs the child.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 48,
+          "default": 6
+        },
+        "fruitLifetime": {
+          "description": "Ticks a ground fruit lasts off the mat; mat fruit never rots.",
+          "type": "integer",
+          "minimum": 24,
+          "maximum": 960,
+          "default": 96
+        },
+        "basketCapacity": {
+          "description": "Fruit the basket mat may hold in total.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "default": 2
+        },
+        "rewardPreferred": {
+          "description": "Points for the child eating the fruit it prefers; the parent scores the same number.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "rewardOther": {
+          "description": "Points for the child eating the other species. A misread delivery is worth 1 where a read-right one is worth 3, so reading the child is a 3x score rather than a tie-break.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 1
+        },
+        "preferenceSwitch": {
+          "description": "Switch the child's preference once, at a turn drawn from the secret RNG sub-stream (the daycare-fickle variant).",
+          "type": "boolean",
+          "default": false
+        },
+        "llmTimeoutSeconds": {
+          "description": "Timeout for one batched decision.",
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 60,
+          "default": 18
+        },
+        "minTurnSeconds": {
+          "description": "Wall-clock floor between batch STARTS, so an episode stays under the Bedrock sidecar's 30 requests/minute ceiling.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60,
+          "default": 8
+        },
+        "maxOutputTokens": {
+          "description": "Model output cap per decision.",
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 2000,
+          "default": 600
+        },
+        "model": {
+          "description": "Claude model for the direct-Anthropic transport (ANTHROPIC_API_KEY). Hosted Bedrock uses haiku only.",
+          "type": "string",
+          "default": "claude-haiku-4-5"
+        },
+        "episodeTimeoutSeconds": {
+          "description": "Wall clock the game assumes the platform allows when COWORLD_TIMEOUT_SECONDS is absent; it plays inside 60% of it.",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 6000,
+          "default": 1200
+        },
+        "playerConnectTimeoutSeconds": {
+          "description": "Seconds to wait for the seat sockets before starting anyway.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600,
+          "default": 120
+        },
+        "shutdownGraceSeconds": {
+          "description": "Seconds /healthz and /global keep answering after the artifacts are written.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "default": 20
+        },
+        "showPlayerLabels": {
+          "description": "Draw each cog's alias under its feet on the board.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "win",
+        "reason",
+        "ending"
+      ],
+      "properties": {
+        "names": {
+          "description": "POLICY display names, indexed by slot. Seats play under anonymous cog aliases in-game.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string"
+          }
+        },
+        "aliases": {
+          "description": "The in-game cog aliases, indexed by slot.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string"
+          }
+        },
+        "roles": {
+          "description": "The role each seat played.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "enum": [
+              "parent",
+              "child"
+            ]
+          }
+        },
+        "scores": {
+          "description": "The mirrored consumption score (higher is better, and equal by construction).",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "win": {
+          "description": "scores[i] >= par. Daycare is cooperative: the boolean means 'the pair beat par'.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "preference": {
+          "description": "The child's preference at the end of the episode (spectator/analysis only; it never reaches a player frame).",
+          "type": "string",
+          "enum": [
+            "apple",
+            "banana"
+          ]
+        },
+        "child_ate": {
+          "description": "Fruit the child ate, indexed [apple, banana].",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "delivered": {
+          "description": "Fruit the parent dropped that the child then ate, indexed [apple, banana].",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "wasted": {
+          "description": "Fruit that seat destroyed by eating it as the parent.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "reaches": {
+          "description": "Failed pick attempts by that seat.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "guess_turns_correct": {
+          "description": "Turns whose parent guess equalled the live preference.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "turns": {
+          "description": "Turns completed.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "par": {
+          "description": "2 x turns.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "How the episode ended.",
+          "type": "string",
+          "enum": [
+            "complete",
+            "deadline",
+            "forfeit"
+          ]
+        },
+        "ending": {
+          "description": "The ending shown on the endcard.",
+          "type": "string",
+          "enum": [
+            "turn_limit",
+            "deadline",
+            "forfeit"
+          ]
+        }
+      }
+    },
+    "protocols": {
+      "player": {
+        "type": "text",
+        "value": "daycare.player.v1 -- JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (/player?slot=N&token=T).\n\ngame -> player, on connect: {\"type\":\"welcome\",\"protocol\":\"daycare.player.v1\",\"slot\":N,\"role\":\"parent\"|\"child\",\"name\":\"Alder\"|\"Bramble\",\"turns\":15,\"ticksPerTurn\":60,\"variant\":\"...\"}\n\ngame -> player, at every turn boundary and at episode end: a role-specific {\"type\":\"state\",...} frame carrying the whole yard (every source's kind, species, cell, ripe count and time to next ripen; every ground fruit and its ttl; the basket), both cogs' cells / carried fruit / score, this seat's counters and last order, the OTHER seat's behaviour summary for the last turn and cumulatively, the per-turn history, this seat's own private notes and the rules. The parent's frame NEVER carries the child's preference, standing order, hunch or notes; the child's frame never carries the parent's guess, standing order, hunch or notes; neither carries the episode seed.\n\ngame -> player, terminal: {\"type\":\"final\",\"done\":true,\"slot\":N,\"scores\":[a,b],\"names\":[\"Alder\",\"Bramble\"],\"roles\":[...],\"turns\":T,\"reason\":...,\"ending\":...}. It carries NO preference field -- the parent must never learn the answer, not even at the buzzer. The player exits 0.\n\nplayer -> game: {\"type\":\"prompt\",\"prompt\":\"<= 4000 chars\",\"scripted\":\"caretaker\"|\"stubborn\"|\"\"}, sent immediately on connect and again after the welcome (the re-send guards the slot-registration race). Any other frame is ignored with a log line. All decision-making happens in the GAME container, which is what lets both seats' LLM calls go out as one parallel batch per turn."
+      },
+      "global": {
+        "type": "text",
+        "value": "Global spectators connect a websocket to /global and receive paintbot's binary sprite protocol: one zoomable map layer (1152x672) whose background ships once as static horizontal bands, plus one object per source, ground fruit, cog, alias label and effect. The broadcast chrome (scorebug, clock, scrubber, roster, per-tick events, the score series, the beat timeline and the appended `secret` block that reveals the child's preference to SPECTATORS) rides the same binary channel as the LABEL of the reserved 1x1 sprite id 4090 -- the only channel that survives a hosted replay.\n\nGET /client/global serves the broadcast page. Replays are a STATIC file plus a browser wasm viewer, never a pod: the platform serves the bundle at /v2/coworlds/replays/static/<cow_id>/<sha>/index.html?replay=<s3 url> and the viewer decodes the recorded state -- names, policy names, roles, the full yard geometry, every rule constant, the seed, the child's secret preference, per-tick state, the score and guess series, beats, events and results all live in the replay bytes."
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "text",
+        "value": "Daycare: two cogs in a walled yard. The CHILD wants one of two fruits -- apple or banana -- and can never reach the tall trees; the PARENT can reach everything and is paid only when the child eats, tripled when the meal is the fruit the child secretly prefers. There is no way to talk: no message channel exists in either direction, so the parent has to read the child's preference out of where it walks, what it reaches for, and what it refuses to eat. Both seats score the same number, so the pair either reads each other or both go hungry. A policy is just a prompt."
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "Rules",
+          "content": {
+            "type": "text",
+            "value": "# Daycare rules\n\n## The yard\nA fixed 24x14 grid, 48 board px per cell, inside an impassable fence ring. Eight TALL TREES (4 apple, 4 banana) and 2-4 SHRUBS (half apple, half banana) are impassable; a four-cell woven BASKET MAT in the middle is walkable and fruit resting on it never rots. The layout is species-congruent by construction: the reflection x -> 23 - x maps the apple source set exactly onto the banana set, and a mirror bit drawn from the layout RNG decides which species sits nearer the spawns, so no species is favoured and 'apples live on the left' is not a learnable prior.\n\n## Who can harvest what\n| source | capacity | initial ripe | regrow | parent | child |\n|---|---|---|---|---|---|\n| tall tree | 3 | 2 | +1 ripe every 24 ticks | always | NEVER -- the attempt is the 'reach' |\n| shrub | 1 | 1 | +1 ripe every 240 ticks | always | 25% of attempts (15% in the sparse variant); a failed shrub pick costs 6 ticks |\n| ground fruit | 1 per cell | - | - | always | always |\n\nGround fruit ages: ttl starts at 120 ticks off the mat and the fruit is removed at 0, so a delivery has to land NEAR the child.\n\n## The nine-step tick\n1 regrow, 2 kernel intent, 3 pick, 4 drop, 5 eat, 6 moves, 7 ground ageing, 8 behaviour accounting, 9 record. Within a step seats resolve in ascending slot order and sources in the fixed order tall trees then shrubs, each by (row, col). A move is legal only every 2 ticks and only into a free grass or mat cell; an illegal action degrades to `wait`.\n\n## Standing orders\nA seat does not author 720 actions. Once per TURN (60 ticks) each seat submits ONE standing order and a deterministic kernel turns it into the per-tick grid action stream for the whole turn.\n\nPARENT jobs: `provide <fruit>` (fetch it and drop it beside the child), `stock <fruit>` (fetch it and put it on the mat), `watch` (stand near the child and observe -- it feeds nobody), `idle`. The parent must also send a `guess` every turn.\n\nCHILD jobs: `seek <fruit>` (go eat that species, refusing the other), `show <fruit>` (stand under a tall tree of that species and reach for it over and over -- it can never yield food; it is the only way to say what you want), `graze` (eat whatever is nearest, either species -- it says nothing), `beg` (stand next to the parent), `idle`.\n\n## Scoring\nThe child scores 3 for eating the fruit it prefers and 0 for the other; the parent's score is EXACTLY THE SAME NUMBER. A parent that eats a fruit itself destroys it for 0. Higher is better. `win[i] = scores[i] >= par` with par = 2 x turns = 30: Daycare is cooperative, so the platform's boolean means 'the pair beat par'.\n\n## End conditions\nThe FIRST of: 15 turns played (`complete` / `turn_limit`); the wall clock passes 60% of the episode timeout (`deadline` / `deadline`); no seat connected within 120 s (`forfeit` / `forfeit`). A MISSING seat does not end the episode -- it plays the `caretaker` baseline and the game runs.\n"
+          }
+        },
+        {
+          "id": "policies.md",
+          "title": "Fielding a policy",
+          "content": {
+            "type": "text",
+            "value": "# Fielding a policy\n\nA policy is a prompt. Upload this image with a `PLAYER_PROMPT` and the game container asks the model, once per turn, for one standing order:\n\n    coworld upload-policy coworld-daycare:latest --name my-daycare \\\n      --run /bin/daycare-player \\\n      --secret-env PLAYER_PROMPT=\"<your strategy, for BOTH roles>\" \\\n      --secret-env USE_BEDROCK=true\n\n`PLAYER_SCRIPTED=caretaker` or `PLAYER_SCRIPTED=stubborn` plays a built-in baseline instead, deterministically, with no LLM.\n\n## The reply schema\nExactly one JSON object whose first character is `{`.\n\nParent: `{\"job\":\"provide\",\"fruit\":\"banana\",\"guess\":\"banana\",\"hunch\":\"it only ever reaches for bananas\",\"notes\":\"turn 3 it walked over an apple twice\"}`\n\nChild: `{\"job\":\"show\",\"fruit\":\"banana\",\"hunch\":\"I will stand under the banana tree until it notices\",\"notes\":\"apples keep arriving\"}`\n\n| field | rule |\n|---|---|\n| `job` | must be in THIS ROLE's enum; anything else is an invalid reply |\n| `fruit` | `apple` or `banana`; required for parent `provide`/`stock` and child `seek`/`show` |\n| `guess` | `apple` or `banana`; REQUIRED from the parent every turn. A guess that disagrees with the fruit being delivered is accepted as written -- testing a hypothesis by delivering the other species must stay expressible |\n| `hunch` | at most 80 characters, truncated on rune boundaries. SPECTATORS ONLY -- the other seat never sees it |\n| `notes` | at most 240 characters. PRIVATE -- returned only to you, next turn |\n\nExtra keys are ignored. An invalid reply is retried ONCE with a hint, then that seat plays the `caretaker` order for the turn and the `order` event records `\"source\":\"fallback\"`.\n\n## The behaviour summary the parent gets\nThe sim computes it, so it is identical for every policy: per species, `adjacentTicks`, `reachAttempts`, `reachFails`, `groundPasses` (walked over without eating), `ate` and `carriedTicks`, for the last turn AND cumulatively, plus `cellsWalked` and `idleTicks`. Failed reaches at a tall tree are the purest signal -- the child cannot pick them, so reaching there is pure desire. The child gets the mirror-image summary about the parent's deliveries, and its OWN preference; it never sees the parent's guess.\n"
+          }
+        }
+      ]
+    }
+  },
+  "player": [
+    {
+      "id": "daycare-caretaker",
+      "name": "Daycare Caretaker Baseline",
+      "type": "player",
+      "description": "The working scripted baseline as a fieldable policy, role-aware: as the PARENT it reads the child's cumulative behaviour summary (failed reaches first, then refusals, then adjacency, then meals), guesses the species and provides it; as the CHILD it seeks its own species when it can and otherwise stands under a tall tree of that species and reaches, over and over, so the parent has something to read. Deterministic, no LLM. This is also the order every failed LLM decision falls back to.",
+      "image": "{{DAYCARE_IMAGE}}",
+      "run": [
+        "/bin/daycare-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "caretaker"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-daycare/tree/main"
+    },
+    {
+      "id": "daycare-stubborn",
+      "name": "Daycare Stubborn Baseline",
+      "type": "player",
+      "description": "The anti-theory-of-mind foil: as the PARENT it provides apples and guesses apple every turn forever, ignoring the child entirely; as the CHILD it grazes -- eats whatever is nearest, never reaches at a tall tree, and therefore emits no species signal at all. One exception keeps a stubborn pair off a guaranteed zero: after four turns without a meal the child begs for one turn.",
+      "image": "{{DAYCARE_IMAGE}}",
+      "run": [
+        "/bin/daycare-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "stubborn"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-daycare/tree/main"
+    }
+  ],
+  "variants": [
+    {
+      "id": "daycare",
+      "name": "Daycare",
+      "description": "The standard yard: four shrubs, the child picks one in four, a fixed preference. Two cogs, fifteen turns, no way to talk.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Alder"
+          },
+          {
+            "name": "Bramble"
+          }
+        ],
+        "num_agents": 2,
+        "turns": 15,
+        "ticksPerTurn": 60,
+        "shrubs": 4,
+        "childShrubPickPermille": 250,
+        "preferenceSwitch": false,
+        "slot0Role": "parent",
+        "playerConnectTimeoutSeconds": 120
+      }
+    },
+    {
+      "id": "daycare-sparse",
+      "name": "Daycare (sparse shrubs)",
+      "description": "Two shrubs and a 15% child pick chance: the child can barely feed itself, so the parent's read of its preference is nearly the whole score.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Alder"
+          },
+          {
+            "name": "Bramble"
+          }
+        ],
+        "num_agents": 2,
+        "turns": 15,
+        "ticksPerTurn": 60,
+        "shrubs": 2,
+        "childShrubPickPermille": 150,
+        "preferenceSwitch": false,
+        "slot0Role": "parent",
+        "playerConnectTimeoutSeconds": 120
+      }
+    },
+    {
+      "id": "daycare-fickle",
+      "name": "Daycare (changing taste)",
+      "description": "The child's preference switches once, mid-episode, without warning: the parent has time to be right, then wrong, then right again.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Alder"
+          },
+          {
+            "name": "Bramble"
+          }
+        ],
+        "num_agents": 2,
+        "turns": 15,
+        "ticksPerTurn": 60,
+        "shrubs": 4,
+        "childShrubPickPermille": 250,
+        "preferenceSwitch": true,
+        "slot0Role": "parent",
+        "playerConnectTimeoutSeconds": 120
+      }
+    },
+    {
+      "id": "daycare-swapped",
+      "name": "Daycare (child in seat 0)",
+      "description": "The same game with the roles swapped by seat, so the ladder can rate a policy in both roles. num_agents is 2 here too.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Alder"
+          },
+          {
+            "name": "Bramble"
+          }
+        ],
+        "num_agents": 2,
+        "turns": 15,
+        "ticksPerTurn": 60,
+        "shrubs": 4,
+        "childShrubPickPermille": 250,
+        "preferenceSwitch": false,
+        "slot0Role": "child",
+        "playerConnectTimeoutSeconds": 120
+      }
+    }
+  ],
+  "certification": {
+    "game_config": {
+      "players": [
+        {
+          "name": "Alder"
+        },
+        {
+          "name": "Bramble"
+        }
+      ],
+      "num_agents": 2,
+      "seed": 7,
+      "turns": 6,
+      "ticksPerTurn": 60,
+      "shrubs": 4,
+      "childShrubPickPermille": 250,
+      "minTurnSeconds": 0,
+      "playerConnectTimeoutSeconds": 120
+    },
+    "players": [
+      {
+        "player_id": "daycare-caretaker"
+      },
+      {
+        "player_id": "daycare-stubborn"
+      }
+    ]
+  }
+}

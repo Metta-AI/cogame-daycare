@@ -1,0 +1,143 @@
+# Submit an uploaded policy to a league as a specific player identity.
+#
+# Goes to:  .github/workflows/coworld-submit.yml  in the coworld repo.
+# Substitute: nothing — this template is slug-independent.
+#
+# Why it exists: champion submission has no documented HTTPS endpoint, and the
+# coworld-builder sandbox has no coworld CLI. Phase 50 seats both champions by
+# dispatching this workflow twice (once per player identity).
+#
+# `softmax player use` switches the acting identity for the whole CLI session;
+# the always() unset step keeps a failed run from leaving the runner — and any
+# later step in the same job — impersonating someone.
+#
+# Org secrets required on Metta-AI: SOFTMAX_TOKEN.
+#
+# The agent reads the outcome back with:
+#   gh run download <run_id> -R Metta-AI/cogame-daycare -n submit-result \
+#     -D /tmp/sr && jq . /tmp/sr/submit-result.json
+name: Coworld submit
+
+on:
+  workflow_dispatch:
+    inputs:
+      player_id:
+        description: >-
+          Acting player identity. daveey = ply_44ae9048-3242-4654-881f-6d9d43347fa3,
+          daveey-1 = ply_bac48eb1-662e-44f8-973d-f3e016dccf5d
+        required: true
+        type: string
+      policy:
+        description: "Policy to submit, <name>:vN (omit :vN for the latest version)"
+        required: true
+        type: string
+      league_id:
+        description: "Target league, league_..."
+        required: true
+        type: string
+
+# Submissions are permanent and placement is async; never run two at once.
+concurrency:
+  group: coworld-submit
+  cancel-in-progress: false
+
+env:
+  # Kept on the same pin as coworld-release.yml.
+  COWORLD_PKG: "coworld[auth]==0.1.42"  # keep >= release template's floor; see coworld-release.yml
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # `runner.*` is a STEP-level context: in a workflow- or job-level `env:`
+      # block GitHub rejects the file with "Unrecognized named-value: 'runner'"
+      # and no job runs at all. SR is exported here, first, from $RUNNER_TEMP.
+      - name: Export the result directory
+        run: |
+          set -euo pipefail
+          echo "SR=${RUNNER_TEMP}/submit-result" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/submit-result"
+
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Authenticate to Softmax
+        env:
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$SR"
+          if [ -z "${SOFTMAX_TOKEN}" ]; then
+            echo "::error::SOFTMAX_TOKEN org secret is not set on this repo"
+            exit 1
+          fi
+          uvx --from "$COWORLD_PKG" softmax set-token "$SOFTMAX_TOKEN"
+
+      - name: Submit
+        env:
+          PLAYER_ID: ${{ inputs.player_id }}
+          POLICY: ${{ inputs.policy }}
+          LEAGUE_ID: ${{ inputs.league_id }}
+        run: |
+          set -euo pipefail
+          uvx --from "$COWORLD_PKG" softmax player use "$PLAYER_ID"
+          set +e
+          uvx --from "$COWORLD_PKG" coworld submit "$POLICY" \
+            --league "$LEAGUE_ID" --no-open-browser 2>&1 | tee "$SR/submit.log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          echo "$rc" > "$SR/rc"
+          exit "$rc"
+
+      - name: Unset the player identity
+        if: always()
+        run: uvx --from "$COWORLD_PKG" softmax player unset || true
+
+      - name: Assemble submit-result.json
+        if: always()
+        env:
+          PLAYER_ID: ${{ inputs.player_id }}
+          POLICY: ${{ inputs.policy }}
+          LEAGUE_ID: ${{ inputs.league_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$SR"
+          python3 - "$SR" <<'PY'
+          import json, os, sys
+          sr = sys.argv[1]
+          log_path = os.path.join(sr, "submit.log")
+          log = open(log_path, errors="replace").read() if os.path.exists(log_path) else ""
+          rc_path = os.path.join(sr, "rc")
+          rc = int(open(rc_path).read().strip()) if os.path.exists(rc_path) else None
+          ok = rc == 0
+          result = {
+              "ok": ok,
+              "player_id": os.environ["PLAYER_ID"],
+              "policy": os.environ["POLICY"],
+              "league_id": os.environ["LEAGUE_ID"],
+              "exit_code": rc,
+              "output_tail": log[-4000:],
+              "error": None if ok else (log.strip()[-1000:] or "submit did not run"),
+          }
+          json.dump(result, open(os.path.join(sr, "submit-result.json"), "w"), indent=2)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(
+                      f"## Submit {'OK' if ok else 'FAILED'}\n\n"
+                      f"- policy: `{result['policy']}`\n"
+                      f"- league: `{result['league_id']}`\n"
+                      f"- as: `{result['player_id']}`\n"
+                  )
+          print(json.dumps({k: v for k, v in result.items() if k != "output_tail"}, indent=2))
+          PY
+
+      - name: Upload submit-result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: submit-result
+          path: ${{ env.SR }}/submit-result.json
+          if-no-files-found: error
+          retention-days: 30

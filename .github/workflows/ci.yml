@@ -1,0 +1,375 @@
+# CI for a Coworld game repo (Metta-AI/cogame-daycare).
+#
+# Goes to:  .github/workflows/ci.yml  in the coworld repo.
+# Substitute: daycare  (lowercase game slug, e.g. bullwhip)
+#             coworld-daycare (local image name WITHOUT a tag, must match the image in
+#                      compose.yaml minus ":latest", e.g. coworld-bullwhip)
+#             2 (seat count -- a CROSS-CHECK, not a fallback:
+#                      docker_smoke.sh takes the seat count solely from
+#                      certification.game_config.num_agents and hard-fails if
+#                      this value disagrees with it)
+#
+# The coworld-builder sandbox has no docker, no nim, no emsdk and no browser:
+# this workflow is the ONLY place those toolchains run. Phase 20's exit
+# criterion is this workflow green on main.
+#
+# It also needs tools/ci/viewer_smoke.mjs (copied verbatim from coworld-builder
+# templates/tools/ci/; no substitutions) -- the wasm-viewer job opens the built
+# bundle in headless chromium and fails if the replay never renders.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SLUG: daycare
+  IMAGE: coworld-daycare
+  # Pins mirror the Dockerfile build stage; bump both together.
+  NIMBY_VERSION: "0.1.26"
+  NIM_VERSION: "2.2.4"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Native Nim tests. Same nimby recipe as the Dockerfile build stage, so a
+  # green test job means the image's compiler and package tree agree.
+  # ---------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache nimby toolchain and nimcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nimby
+            ~/.cache/nim
+          key: nimby-${{ runner.os }}-${{ env.NIMBY_VERSION }}-${{ env.NIM_VERSION }}-${{ hashFiles('nimby.lock') }}
+          restore-keys: |
+            nimby-${{ runner.os }}-${{ env.NIMBY_VERSION }}-${{ env.NIM_VERSION }}-
+
+      - name: Install nimby and Nim
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          arch="$(dpkg --print-architecture)"
+          case "$arch" in
+            amd64) asset="nimby-Linux-X64" ;;
+            arm64) asset="nimby-Linux-ARM64" ;;
+            *) echo "::error::unsupported runner arch: $arch"; exit 1 ;;
+          esac
+          curl -fsSL -o "$HOME/.local/bin/nimby" \
+            "https://github.com/treeform/nimby/releases/download/${NIMBY_VERSION}/${asset}"
+          chmod +x "$HOME/.local/bin/nimby"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.nimby/nim/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nimby" use "$NIM_VERSION"
+
+      - name: Sync Nim dependencies
+        run: |
+          set -euo pipefail
+          if [ -f nimby.lock ]; then
+            nimby --global sync nimby.lock
+          else
+            echo "no nimby.lock in the repo; skipping dependency sync"
+          fi
+
+      - name: Regenerate nim.cfg from the synced package tree
+        # The committed nim.cfg pins the AUTHOR's machine package paths. Rebuild
+        # it from this runner's ~/.nimby/pkgs, exactly as the Dockerfile does.
+        run: |
+          set -euo pipefail
+          rm -f nim.cfg
+          for pkg in "$HOME"/.nimby/pkgs/*; do
+            [ -e "$pkg" ] || continue
+            if [ -d "$pkg/src" ]; then
+              echo "--path:\"$pkg/src\"" >> nim.cfg
+            else
+              echo "--path:\"$pkg\"" >> nim.cfg
+            fi
+          done
+          echo '--path:"src"' >> nim.cfg
+          echo "::group::nim.cfg"
+          cat nim.cfg
+          echo "::endgroup::"
+
+      - name: Run tests
+        # Every tests/*.nim runs twice: debug (range/overflow checks, stack
+        # traces) and -d:release (release-only compile errors and codegen bugs
+        # that debug runs never see). Repo variables narrow that:
+        #   NIM_TESTS               space-separated test files (default tests/*.nim)
+        #   NIM_TESTS_DEBUG_ONLY    files to run ONLY in debug
+        #   NIM_TESTS_RELEASE_ONLY  files to run ONLY in release
+        env:
+          NIM_TESTS: ${{ vars.NIM_TESTS }}
+          NIM_TESTS_DEBUG_ONLY: ${{ vars.NIM_TESTS_DEBUG_ONLY }}
+          NIM_TESTS_RELEASE_ONLY: ${{ vars.NIM_TESTS_RELEASE_ONLY }}
+        run: |
+          set -uo pipefail
+          tests="${NIM_TESTS:-}"
+          if [ -z "${tests}" ]; then
+            tests="$(ls tests/*.nim 2>/dev/null | tr '\n' ' ')"
+          fi
+          if [ -z "$(echo "${tests}" | tr -d ' ')" ]; then
+            echo "::error::no test files found (tests/*.nim empty and NIM_TESTS unset)"
+            exit 1
+          fi
+          fail=0
+          for t in ${tests}; do
+            if [ ! -f "${t}" ]; then
+              echo "::error::test file not found: ${t}"
+              fail=1
+              continue
+            fi
+            modes="debug release"
+            case " ${NIM_TESTS_DEBUG_ONLY} " in *" ${t} "*) modes="debug" ;; esac
+            case " ${NIM_TESTS_RELEASE_ONLY} " in *" ${t} "*) modes="release" ;; esac
+            for m in ${modes}; do
+              if [ "${m}" = "release" ]; then
+                flags="--hints:off -d:release"
+              else
+                flags="--hints:off"
+              fi
+              echo "::group::nim r ${flags} --path:src ${t}"
+              # shellcheck disable=SC2086
+              if ! nim r ${flags} --path:src "${t}"; then
+                echo "::error::FAILED (${m}) ${t}"
+                fail=1
+              fi
+              echo "::endgroup::"
+            done
+          done
+          exit "${fail}"
+
+  # ---------------------------------------------------------------------
+  # Packaging smoke: the production image builds, and one real episode runs
+  # end to end in raw docker with the certification fixture's seat mix.
+  # ---------------------------------------------------------------------
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # Invoked by path, not through `bash`: a `bash SCRIPT` call ignores the exec
+      # bit, so a 0644 helper would go green here and only fail wherever it is
+      # executed directly.
+      - name: Assert the smoke script is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh is missing"; exit 1; }
+          test -x tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh must be committed executable (mode 100755)."
+            echo "::error::Fix with: git update-index --chmod=+x tools/ci/docker_smoke.sh"
+            exit 1; }
+
+      - name: Build image
+        run: docker build --platform=linux/amd64 -t "${IMAGE}:ci" .
+
+      - name: Raw-Docker episode smoke
+        # SMOKE_SLUG is passed explicitly so the workflow's SLUG is the single
+        # source for the game/player entrypoint names; the script's own
+        # scaffold-substituted default is only a fallback.
+        env:
+          SMOKE_SLUG: ${{ env.SLUG }}
+        run: ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
+
+      # The replay this episode produced is the ONLY replay in CI that is
+      # known to be a real, current-format episode of this game. wasm-viewer
+      # downloads it and loads it in a browser, so the viewer is tested
+      # against the bytes the platform will actually serve rather than a
+      # hand-written fixture that can drift.
+      - name: Upload the smoke replay
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-replay
+          path: dist/smoke/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # The static replay viewer. The platform serves THIS bundle from
+  # /v2/coworlds/replays/static/<cow_id>/<sha>/index.html, so a bundle that
+  # does not build (or is missing its wasm) means every hosted replay hangs.
+  # tools/build_replay_viewer.sh falls back to the pinned emscripten/emsdk
+  # container (Dockerfile.replay-viewer) because the runner has no emcc.
+  # ---------------------------------------------------------------------
+  wasm-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The bundle is EXECUTED here, not merely built, and it is executed against
+    # the replay docker-smoke just produced -- hence the dependency.
+    needs: docker-smoke
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # `coworld build` (bundle.py) refuses to package a source replay-viewer
+      # bundle unless the hook is BOTH a file and os.X_OK:
+      #   "Coworld builds with a source replay viewer bundle require an
+      #    executable build hook".
+      # Running it as `bash tools/build_replay_viewer.sh` would ignore the exec
+      # bit entirely, so a mode-0644 hook passed CI and only blew up later, in
+      # coworld-release.yml's "Build the Coworld manifest". Assert the bit, then
+      # invoke by path so CI exercises exactly what `coworld build` requires.
+      - name: Assert the replay-viewer build hook is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh is missing; coworld build needs it"
+            echo "::error::to emit the static replay bundle"
+            exit 1; }
+          test -x tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh must be committed executable (mode 100755):"
+            echo "::error::coworld build hard-requires os.X_OK on the build hook."
+            echo "::error::Fix with: git update-index --chmod=+x tools/build_replay_viewer.sh"
+            exit 1; }
+
+      - name: Assert the viewer load test is present
+        run: |
+          set -euo pipefail
+          test -s tools/ci/viewer_smoke.mjs || {
+            echo "::error::tools/ci/viewer_smoke.mjs is missing. It is the only gate that"
+            echo "::error::EXECUTES the replay viewer; without it a bundle that deadlocks"
+            echo "::error::(cogame-lantern, 2026-08-23) ships green. Copy it from"
+            echo "::error::coworld-builder templates/tools/ci/viewer_smoke.mjs."
+            exit 1; }
+
+      - name: Build the static replay viewer bundle
+        run: ./tools/build_replay_viewer.sh "$PWD/dist/static-replay-viewer"
+
+      - name: Assert the bundle is complete
+        run: |
+          set -euo pipefail
+          out="$PWD/dist/static-replay-viewer"
+          test -s "${out}/index.html" || {
+            echo "::error::${out}/index.html missing or empty"; exit 1; }
+          wasm_count="$(find "${out}" -name '*.wasm' -size +1c | wc -l | tr -d ' ')"
+          if [ "${wasm_count}" -lt 1 ]; then
+            echo "::error::no non-empty .wasm module in ${out}"
+            find "${out}" -type f | sed 's/^/  /'
+            exit 1
+          fi
+          echo "bundle OK:"
+          find "${out}" -type f -printf '  %p (%s bytes)\n'
+
+      # -----------------------------------------------------------------
+      # The load test. Everything above only proves files EXIST. cogame-lantern
+      # shipped a viewer whose emscripten link flags (MODULARIZE / EXPORT_NAME)
+      # and whose JS bootstrap came from two different starters: the factory was
+      # never called, no error was thrown, and softmax.com sat on
+      # "Loading replay..." forever with every file present and 200. Only
+      # opening the page in a browser sees that.
+      #
+      # Playwright is pinned to 1.55.0 in BOTH places -- the npm module and the
+      # browser download. Bump them together or the browser 404s.
+      # -----------------------------------------------------------------
+      - name: Download the smoke replay
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-replay
+          path: dist/smoke
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright (pinned 1.55.0)
+        run: |
+          set -euo pipefail
+          npm install --no-save playwright@1.55.0
+          npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Load the bundle in a real browser
+        run: |
+          set -euo pipefail
+          # A for-loop, not `ls … | head -1`: under `set -o pipefail` an unmatched
+          # glob makes ls exit 2 and kills the step before the harness ever runs
+          # (cogame-raid 2026-08-23, run 32623414696).
+          replay=""
+          for candidate in dist/smoke/*.replay dist/smoke/replay.json; do
+            if [ -f "${candidate}" ]; then replay="${candidate}"; break; fi
+          done
+          test -n "${replay}" || {
+            echo "::error::docker-smoke uploaded no replay to dist/smoke"; ls -la dist/smoke || true; exit 1; }
+          echo "loading ${replay} in dist/static-replay-viewer"
+          # --strict-text-bounds fails the job if the viewer drew any text
+          # outside its canvas -- a bubble, caption or nameplate with nowhere
+          # to go, invisible to the load signal and to the screenshot
+          # (cogchemists 2026-08-24: four speech bubbles drawn at a negative y
+          # and clipped to slivers). Keep it for a FIXED arena, which is every
+          # coworld whose whole board fits the frame. DROP THIS FLAG ONLY if
+          # the board is pannable, where drawing off-frame is normal -- the
+          # count is still reported on stdout and in viewer-smoke.json.
+          # --soak: LOADING IS NOT PLAYING. cogball 0.1.4 loaded, drew one
+          # frame, set data-replay-loaded and then threw inside that frame's
+          # own handler; the scrub readouts passed because seeking skips the
+          # killing frame. The certification fixture is 6 x 60 ticks = 15 s of
+          # video, so it outlasts a 10 s soak (ecos, 2026-08-23).
+          node tools/ci/viewer_smoke.mjs \
+            --bundle dist/static-replay-viewer \
+            --replay "${replay}" \
+            --timeout 90 \
+            --soak 10 \
+            --strict-text-bounds
+
+      # -----------------------------------------------------------------
+      # The WORST-CASE RENDERER FIXTURE. docker_smoke.sh runs with no
+      # ANTHROPIC_API_KEY, so every seat plays a scripted baseline and the
+      # replay above carries ZERO LLM text: nothing that plays it can draw the
+      # chrome that shows a hunch or a notes row. tools/ci/renderer_fixture.html
+      # loads the REAL chrome_common.js and broadcast_core.js with a full-cap
+      # 80-rune hunch and 240-rune notes on BOTH seats, a 15-chip guess tape and
+      # the secret panel, at 360 / 620 / 1152 px, and self-checks its own string
+      # lengths (cogchemists, 2026-08-24).
+      - name: Render the worst-case chrome fixture
+        run: |
+          set -euo pipefail
+          test -s tools/ci/renderer_fixture.html
+          mkdir -p fixture-evidence
+          node tools/ci/viewer_smoke.mjs \
+            --url "file://$PWD/tools/ci/renderer_fixture.html" \
+            --timeout 60 \
+            --strict-text-bounds \
+            --out fixture-evidence
+
+      - name: Upload the renderer fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-fixture
+          path: |
+            fixture-evidence/viewer-smoke.png
+            fixture-evidence/viewer-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the viewer smoke evidence
+        # Always: the screenshot and the JSON are most useful when the job is red.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-smoke
+          path: |
+            viewer-smoke.png
+            viewer-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-replay-viewer
+          path: dist/static-replay-viewer
+          if-no-files-found: error
+          retention-days: 14

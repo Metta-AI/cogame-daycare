@@ -1,0 +1,10 @@
+nimcache/
+# Host-specific nimby package paths; regenerated per machine (Dockerfile and
+# ci.yml both rebuild it from ~/.nimby/pkgs).
+nim.cfg
+dist/
+replay-viewer/dist/
+/daycare
+/daycare-player
+*.replay
+__pycache__/

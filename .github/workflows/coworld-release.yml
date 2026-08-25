@@ -1,0 +1,508 @@
+# Build -> certify -> upload policies -> upload coworld -> put secret.
+#
+# Goes to:  .github/workflows/coworld-release.yml  in the coworld repo.
+# Substitute: daycare  (lowercase game slug; also the Coworld name and the
+#                      secret namespace, e.g. bullwhip)
+#             coworld-daycare (local image name WITHOUT a tag, must match compose.yaml
+#                      minus ":latest", e.g. coworld-bullwhip)
+#
+# The step ORDER is load-bearing:
+#   build -> certify -> upload-policy (xN) -> upload-coworld -> secret put
+# Policies MUST be uploaded before `upload-coworld`: OBSERVED, `upload-policy`
+# reports the local image missing when it runs afterwards. (The mechanism is
+# not "upload-coworld prunes the image" -- no prune/rmi exists anywhere in the
+# CLI; only the ordering is established, so treat it as empirical.) `secret
+# put` MUST come after upload-coworld, because the secret namespace does not
+# exist until the Coworld does.
+#
+# Repo secrets required: SOFTMAX_TOKEN, ANTHROPIC_API_KEY (set by coworld-builder's propagate-secrets.yml).
+#
+# The agent reads the outcome back with:
+#   gh run download <run_id> -R Metta-AI/cogame-daycare -n release-result \
+#     -D /tmp/rr && jq . /tmp/rr/release-result.json
+name: Coworld release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Coworld version to publish, MAJOR.MINOR.PATCH (e.g. 0.1.0)"
+        required: true
+        type: string
+      policies:
+        description: >-
+          JSON array of policies to upload, each {"name","run","env":{...}}.
+          Empty = read tools/ci/policies.json from the repo.
+        required: false
+        default: ""
+        type: string
+      secret_key_name:
+        description: "Coworld secret key to write ANTHROPIC_API_KEY into"
+        required: false
+        default: "anthropic_api_key"
+        type: string
+      put_secret:
+        description: "Write the ANTHROPIC_API_KEY Coworld secret after upload"
+        required: false
+        default: true
+        type: boolean
+      skip_certify:
+        description: "Skip local certification (debugging only; never for a real release)"
+        required: false
+        default: false
+        type: boolean
+
+# One release at a time, and never cancel one in flight: a killed upload can
+# leave a half-published Coworld version behind.
+concurrency:
+  group: coworld-release
+  cancel-in-progress: false
+
+env:
+  SLUG: daycare
+  IMAGE: coworld-daycare
+  # 0.1.42 is a FLOOR, not a preference. Two independent reasons:
+  # - LIVENESS_MARKER below is only emitted from 0.1.38 on
+  #   (cli.py `_uses_static_replay_viewer_bundle`).
+  # - upload-coworld only waits for the server to finish expanding the
+  #   replay-viewer bundle from 0.1.42 on (`_wait_for_replay_viewer_bundle`);
+  #   older clients race the expansion and the manifest POST fails HTTP 400
+  #   "Coworld replay viewer bundle must be uploaded first"
+  #   (seen: cogame-lighthouse release run 32603113899, 2026-08-22).
+  # 0.1.34 unconditionally prints "Replay liveness: verified ...", so the
+  # certify gate can never pass on it. Do not pin lower.
+  COWORLD_PKG: "coworld[auth]==0.1.42"
+  LIVENESS_MARKER: "Replay liveness: skipped (static replay bundle declared"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # `runner.*` is a STEP-level context: GitHub rejects the whole workflow
+      # with "Unrecognized named-value: 'runner'" if it appears in a workflow-
+      # or job-level `env:` block, and no job ever starts. RR is therefore
+      # exported here, first, from $RUNNER_TEMP; every later step (including the
+      # always() ones) reads it out of the env context.
+      - name: Export the result directory
+        run: |
+          set -euo pipefail
+          echo "RR=${RUNNER_TEMP}/release-result" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/release-result"
+
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RR"
+          echo "Validate inputs" > "$RR/current_step"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::invalid version '$VERSION' (expected MAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+          printf '%s' "$VERSION" > "$RR/version"
+
+      - name: Authenticate to Softmax
+        env:
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Authenticate to Softmax" > "$RR/current_step"
+          if [ -z "${SOFTMAX_TOKEN}" ]; then
+            echo "::error::SOFTMAX_TOKEN secret is not set on this repo (dispatch propagate-secrets.yml in Metta-AI/coworld-builder)"
+            exit 1
+          fi
+          uvx --from "$COWORLD_PKG" softmax set-token "$SOFTMAX_TOKEN"
+
+      - name: Resolve the policy list
+        env:
+          POLICIES_INPUT: ${{ inputs.policies }}
+        run: |
+          set -euo pipefail
+          echo "Resolve the policy list" > "$RR/current_step"
+          if [ -n "${POLICIES_INPUT}" ]; then
+            printf '%s' "${POLICIES_INPUT}" > "$RR/policies_input.json"
+            echo "policies: from the workflow input"
+          elif [ -f tools/ci/policies.json ]; then
+            cp tools/ci/policies.json "$RR/policies_input.json"
+            echo "policies: from tools/ci/policies.json"
+          else
+            echo '[]' > "$RR/policies_input.json"
+            echo "::warning::no policies input and no tools/ci/policies.json; uploading none"
+          fi
+          python3 - "$RR/policies_input.json" <<'PY'
+          import json, sys
+          rows = json.load(open(sys.argv[1]))
+          if not isinstance(rows, list):
+              raise SystemExit("policies must be a JSON array")
+          for row in rows:
+              if not isinstance(row, dict) or not row.get("name"):
+                  raise SystemExit(f"each policy needs a name: {row!r}")
+              if not row.get("run"):
+                  raise SystemExit(f"policy {row.get('name')!r} needs a run")
+              if not isinstance(row.get("env", {}), dict):
+                  raise SystemExit(f"policy {row['name']!r}: env must be an object")
+          print(f"{len(rows)} policies: " + ", ".join(r["name"] for r in rows))
+          PY
+
+      - name: Build the Coworld manifest
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          echo "Build the Coworld manifest" > "$RR/current_step"
+          uvx --from "$COWORLD_PKG" coworld build \
+            --version "$VERSION" \
+            --project . \
+            --compose compose.yaml \
+            --template coworld_manifest_template.json \
+            --output dist/coworld_manifest.json
+          test -s dist/coworld_manifest.json
+
+      - name: Certify locally
+        if: ${{ inputs.skip_certify != true }}
+        run: |
+          set -euo pipefail
+          echo "Certify locally" > "$RR/current_step"
+          set +e
+          uvx --from "$COWORLD_PKG" coworld certify dist/coworld_manifest.json \
+            --no-open-report \
+            2>&1 | tee "$RR/certify.log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          python3 - "$RR" "$rc" "$LIVENESS_MARKER" <<'PY'
+          import json, sys
+          rr, rc, marker = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          text = open(f"{rr}/certify.log", errors="replace").read()
+          liveness = next(
+              (ln.strip() for ln in text.splitlines() if ln.strip().startswith("Replay liveness:")),
+              None,
+          )
+          ok = rc == 0 and marker in text
+          json.dump(
+              {"ok": ok, "exit_code": rc, "replay_liveness": liveness,
+               "output_tail": text[-4000:]},
+              open(f"{rr}/certify.json", "w"), indent=2,
+          )
+          if rc != 0:
+              raise SystemExit(f"certify exited {rc}")
+          if marker not in text:
+              raise SystemExit(
+                  "certification did not report the STATIC replay bundle.\n"
+                  f"  expected a line containing: {marker}\n"
+                  f"  got: {liveness!r}\n"
+                  "The manifest must declare game.replay_viewer.bundle and "
+                  "tools/build_replay_viewer.sh must emit it; a pod-served "
+                  "/client/replay viewer is not acceptable."
+              )
+          print(f"certification OK: {liveness}")
+          PY
+
+      - name: Upload the policies
+        # BEFORE upload-coworld: observed, upload-policy reports the local
+        # image missing if it runs after upload-coworld.
+        run: |
+          set -euo pipefail
+          echo "Upload the policies" > "$RR/current_step"
+          python3 - "$RR" "${IMAGE}:latest" "$COWORLD_PKG" <<'PY'
+          import json, re, shlex, subprocess, sys
+
+          rr, default_image, pkg = sys.argv[1], sys.argv[2], sys.argv[3]
+          rows = json.load(open(f"{rr}/policies_input.json"))
+          uploaded, failures = [], []
+
+          # --secret-env values ride on the upload-policy command line, and a
+          # typer BadParameter echoes the offending KEY=VALUE straight back.
+          # This text ends up in release-result.json, which is uploaded as a
+          # build artifact, so strip every assignment before recording it.
+          ASSIGNMENT = re.compile(r"(?<![\w.-])([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+
+          def redact(text):
+              return ASSIGNMENT.sub(lambda m: f"{m.group(1)}=***", text or "")
+
+          def softmax(*args):
+              return subprocess.run(
+                  ["uvx", "--from", pkg, "softmax", *args], capture_output=True, text=True
+              )
+
+          def unset_player():
+              # Never leave the runner acting as someone else: every later step
+              # in this job (upload-coworld, secret put) would inherit it.
+              result = softmax("player", "unset")
+              if result.returncode != 0:
+                  print(f"::warning::softmax player unset failed: "
+                        f"{redact((result.stderr or result.stdout).strip())[-300:]}")
+
+          try:
+              for row in rows:
+                  name = row["name"]
+                  image = row.get("image") or default_image
+                  run = row["run"]
+                  argv = shlex.split(run) if isinstance(run, str) else list(run)
+                  # A policy version is owned by whoever uploads it, and `coworld
+                  # submit` as a different player 409s "already assigned". Champion
+                  # #2 therefore has to be uploaded while daveey-1 is active, and CI
+                  # is the only place `softmax player use` can run.
+                  player = row.get("player") or None
+                  cmd = ["uvx", "--from", pkg, "coworld", "upload-policy", image, "--name", name]
+                  for token in argv:
+                      cmd += ["--run", token]
+                  for key, value in (row.get("env") or {}).items():
+                      cmd += ["--secret-env", f"{key}={value}"]
+                  # The command is NOT echoed: --secret-env values are policy secrets.
+                  print(f"::group::upload-policy {name} ({image}) as {player or 'the token owner'}",
+                        flush=True)
+                  if player:
+                      switch = softmax("player", "use", player)
+                      sys.stdout.write(switch.stdout)
+                      sys.stderr.write(redact(switch.stderr))
+                      if switch.returncode != 0:
+                          print("::endgroup::", flush=True)
+                          failures.append(
+                              f"{name}: softmax player use {player} exited "
+                              f"{switch.returncode}; "
+                              f"{redact((switch.stderr or switch.stdout).strip())[-300:]}"
+                          )
+                          continue
+                  try:
+                      proc = subprocess.run(cmd, capture_output=True, text=True)
+                  finally:
+                      if player:
+                          unset_player()
+                  sys.stdout.write(proc.stdout)
+                  sys.stderr.write(redact(proc.stderr))
+                  print("::endgroup::", flush=True)
+                  match = re.search(r"^Upload complete: (\S+):(v\d+)$", proc.stdout, re.M)
+                  if proc.returncode != 0 or not match:
+                      failures.append(f"{name}: exit {proc.returncode}; "
+                                      f"{redact((proc.stderr or proc.stdout).strip())[-500:]}")
+                      continue
+                  uploaded.append({
+                      "name": match.group(1),
+                      "version": match.group(2),
+                      "policy_version_id": None,
+                      "player_id": player,
+                  })
+                  print(f"uploaded {match.group(1)}:{match.group(2)} "
+                        f"as {player or 'the token owner'}")
+          finally:
+              # Belt and braces: if anything above escaped, the identity is still cleared.
+              unset_player()
+              json.dump(uploaded, open(f"{rr}/policies.json", "w"), indent=2)
+
+          if failures:
+              json.dump(failures, open(f"{rr}/policy_errors.json", "w"), indent=2)
+              raise SystemExit("policy uploads failed:\n  " + "\n  ".join(failures))
+          print(f"{len(uploaded)} policies uploaded")
+          PY
+
+      - name: Upload the Coworld
+        run: |
+          set -euo pipefail
+          echo "Upload the Coworld" > "$RR/current_step"
+          set +e
+          uvx --from "$COWORLD_PKG" coworld upload-coworld \
+            dist/coworld_manifest.json \
+            --timeout-seconds 900 \
+            --wait-hosted-smoke \
+            --hosted-smoke-timeout-seconds 1800 \
+            2>&1 | tee "$RR/upload.log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          python3 - "$RR" "$rc" <<'PY'
+          import json, re, sys
+          rr, rc = sys.argv[1], int(sys.argv[2])
+          text = open(f"{rr}/upload.log", errors="replace").read()
+
+          def grab(pattern):
+              m = re.search(pattern, text, re.M)
+              return m.group(1) if m else None
+
+          out = {
+              "exit_code": rc,
+              "cow_id": grab(r"^Coworld: (cow_\S+)$"),
+              "manifest_sha": grab(r"^Manifest hash: (sha256:\S+)$"),
+              "canonical": grab(r"^Canonical: (yes|no)$"),
+              "uploaded": grab(r"^Upload complete: (\S+)$"),
+              "hosted_smoke": "passed" if "Hosted smoke certification: passed" in text else None,
+              "hosted_certification": grab(r"^Hosted certification: (.+)$"),
+              "output_tail": text[-4000:],
+          }
+          json.dump(out, open(f"{rr}/upload.json", "w"), indent=2)
+          print(json.dumps({k: v for k, v in out.items() if k != "output_tail"}, indent=2))
+          if rc != 0:
+              raise SystemExit(f"upload-coworld exited {rc}")
+          PY
+
+      - name: Put the Coworld secret
+        # AFTER upload-coworld: the secret namespace is the Coworld's.
+        if: ${{ inputs.put_secret != false }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SECRET_KEY_NAME: ${{ inputs.secret_key_name }}
+        run: |
+          set -euo pipefail
+          echo "Put the Coworld secret" > "$RR/current_step"
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set on this repo (dispatch propagate-secrets.yml in Metta-AI/coworld-builder)"
+            exit 1
+          fi
+          secret_file="$(mktemp)"
+          chmod 600 "$secret_file"
+          printf '%s' "${ANTHROPIC_API_KEY}" > "$secret_file"
+          uvx --from "$COWORLD_PKG" coworld secret put \
+            "$SLUG" "${SECRET_KEY_NAME}" "$secret_file"
+          rm -f "$secret_file"
+          uvx --from "$COWORLD_PKG" coworld secret list "$SLUG"
+          echo '{"ok": true}' > "$RR/secret.json"
+
+      - name: Assemble release-result.json
+        if: always()
+        env:
+          VERSION: ${{ inputs.version }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RR"
+          python3 - "$RR" "$VERSION" "$JOB_STATUS" <<'PY'
+          import json, os, sys
+          rr, version, job_status = sys.argv[1], sys.argv[2], sys.argv[3]
+
+          def load(name, default):
+              path = os.path.join(rr, name)
+              if not os.path.exists(path):
+                  return default
+              try:
+                  return json.load(open(path))
+              except Exception:
+                  return default
+
+          certify = load("certify.json", None)
+          upload = load("upload.json", {})
+          policies = load("policies.json", [])
+          policy_errors = load("policy_errors.json", [])
+          secret = load("secret.json", None)
+          current_step = ""
+          step_path = os.path.join(rr, "current_step")
+          if os.path.exists(step_path):
+              current_step = open(step_path).read().strip()
+
+          canonical_raw = upload.get("canonical")
+          errors = list(policy_errors)
+          if certify is not None and not certify.get("ok"):
+              errors.append("local certification failed or did not declare a static replay bundle")
+          if upload.get("exit_code") not in (None, 0):
+              errors.append(f"upload-coworld exited {upload['exit_code']}")
+          if canonical_raw == "no":
+              errors.append("uploaded Coworld is NOT canonical (hosted smoke likely failed)")
+          elif canonical_raw is None:
+              # No parsed `Canonical:` line at all. Without this the run ends
+              # ok:false with an EMPTY errors[], and phase 40's triage table has
+              # nothing to match on while step_failed names whichever step
+              # merely happened to be running.
+              errors.append(
+                  "no 'Canonical: yes|no' line in the upload-coworld output "
+                  f"(exit_code={upload.get('exit_code')}); the upload did not "
+                  "run, died early, or the CLI output format changed - see "
+                  "release-logs/upload.log"
+              )
+
+          ok = job_status == "success" and canonical_raw == "yes"
+          result = {
+              "version": version,
+              "ok": ok,
+              "cow_id": upload.get("cow_id"),
+              "manifest_sha": upload.get("manifest_sha"),
+              "canonical": True if canonical_raw == "yes" else (False if canonical_raw == "no" else None),
+              "hosted_smoke": upload.get("hosted_smoke"),
+              "hosted_certification": upload.get("hosted_certification"),
+              "certify": None if certify is None else {
+                  "ok": certify.get("ok"),
+                  "replay_liveness": certify.get("replay_liveness"),
+                  "output_tail": certify.get("output_tail"),
+              },
+              "policies": policies,
+              "secret_put": bool(secret and secret.get("ok")),
+              "errors": errors,
+              "step_failed": None if job_status == "success" else (current_step or None),
+          }
+          out = os.path.join(rr, "release-result.json")
+          json.dump(result, open(out, "w"), indent=2)
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = [
+              f"## Coworld release `{version}` — {'OK' if ok else job_status.upper()}",
+              "",
+              "| field | value |",
+              "| --- | --- |",
+              f"| version | `{version}` |",
+              f"| cow_id | `{result['cow_id']}` |",
+              f"| manifest_sha | `{result['manifest_sha']}` |",
+              f"| canonical | **{canonical_raw or 'unknown'}** |",
+              f"| hosted smoke | {result['hosted_smoke'] or 'not reported'} |",
+              f"| replay liveness | {(certify or {}).get('replay_liveness') or 'not certified'} |",
+              f"| secret put | {result['secret_put']} |",
+              "",
+              "### Policies",
+              "",
+          ]
+          if policies:
+              lines += ["| policy | version | uploaded as |", "| --- | --- | --- |"]
+              lines += [
+                  f"| `{p['name']}` | `{p['version']}` | "
+                  f"{('`' + p['player_id'] + '`') if p.get('player_id') else 'token owner'} |"
+                  for p in policies
+              ]
+          else:
+              lines.append("_none uploaded_")
+          if errors:
+              lines += ["", "### Errors", ""] + [f"- {e}" for e in errors]
+          if result["step_failed"]:
+              lines += ["", f"Failed at step: **{result['step_failed']}**"]
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("\n".join(lines) + "\n")
+          print(json.dumps(result, indent=2)[:4000])
+          PY
+
+      - name: Upload release-result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-result
+          path: ${{ env.RR }}/release-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload release logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs
+          path: |
+            ${{ env.RR }}/certify.log
+            ${{ env.RR }}/upload.log
+            dist/coworld_manifest.json
+          # warn, not error: with skip_certify=true, or on a failure before
+          # `coworld build`, some of these legitimately do not exist and the
+          # run should not gain a second red step for it. `release-result`
+          # above is the one the agent actually reads, and that one is `error`.
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Enforce canonical
+        run: |
+          set -euo pipefail
+          canonical="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('canonical'))" \
+            "$RR/release-result.json")"
+          if [ "$canonical" != "True" ]; then
+            echo "::error::Coworld is not canonical (canonical=$canonical). The hosted"
+            echo "::error::smoke did not pass; the version will not be served."
+            exit 1
+          fi
+          echo "Coworld is canonical."
