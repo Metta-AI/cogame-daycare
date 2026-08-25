@@ -184,6 +184,47 @@ block:
   doAssert results["properties"]["preference"]["enum"].to(seq[string]) ==
     @["apple", "banana"]
 
+echo "test_manifest: config_schema admits every game_config this file ships"
+block:
+  # B1 (r1 review): `tokens` and `players` declared `maxItems: 1` in a TWO-seat
+  # game, so the schema this manifest publishes rejected its own four variants
+  # and its own certification fixture — and the server refuses to start with
+  # fewer than two of either (src/daycare/server.nim). The bound belongs to the
+  # seat count, and every shipped game_config is checked against it here so a
+  # schema that rejects the fixtures fails the job instead of the platform.
+  let schema = manifest["game"]["config_schema"]
+  let props = schema["properties"]
+  let seats = props["num_agents"]["maximum"].getInt()
+  doAssert seats == 2
+  for key in ["tokens", "players"]:
+    doAssert props[key]["maxItems"].getInt() == seats,
+      "config_schema." & key & " caps at " & $props[key]["maxItems"].getInt() &
+      " in a " & $seats & "-seat game"
+  var configs: seq[(string, JsonNode)]
+  for variant in manifest["variants"]:
+    configs.add((variant["id"].getStr(), variant["game_config"]))
+  configs.add(("certification", manifest["certification"]["game_config"]))
+  # The runner injects `tokens` and `players` at seat time (the shape
+  # tools/ci/docker_smoke.sh writes), so check that shape against the schema too.
+  var injected = newJObject()
+  injected["tokens"] = newJArray()
+  injected["players"] = newJArray()
+  for slot in 0 ..< seats:
+    injected["tokens"].add(%("token-" & $slot))
+    injected["players"].add(%*{"name": "seat-" & $slot})
+  configs.add(("runner-injected", injected))
+  for entry in configs:
+    let name = entry[0]
+    for key, value in entry[1]:
+      doAssert props.hasKey(key),
+        name & " sets " & key & ", which config_schema does not declare"
+      if value.kind == JArray:
+        let least = props[key]["minItems"].getInt()
+        let most = props[key]["maxItems"].getInt()
+        doAssert value.len >= least and value.len <= most,
+          name & "." & key & " has " & $value.len &
+          " entries, outside the declared " & $least & ".." & $most
+
 echo "test_manifest: results.json validates against the declared schema"
 block:
   let sim = playEpisode(variantConfig("daycare", 3))
