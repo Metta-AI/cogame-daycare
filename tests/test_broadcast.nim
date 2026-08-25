@@ -152,6 +152,11 @@ block:
   doAssert last.hasKey("over")
   doAssert last["over"]["ending"].getStr() == "turn_limit"
   doAssert last["secret"]["pref"].getStr() == $after
+  # The endcard's tally line is the PAIR's totals, not a per-slot array: an
+  # array reaches the DOM as "0,3 reaches".
+  doAssert last["over"]["wasted"].kind == JInt, $last["over"]["wasted"]
+  doAssert last["over"]["reaches"].kind == JInt, $last["over"]["reaches"]
+  doAssert last["over"]["reaches"].getInt() == sim.reaches[0] + sim.reaches[1]
   # Every seek is an array index, and it dismisses nothing by re-simulating.
   player.applyCommand("s:0")
   doAssert player.tick == 0

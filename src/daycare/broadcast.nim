@@ -45,6 +45,12 @@ type
 proc initBroadcastTracker*(): BroadcastTracker =
   BroadcastTracker(firstHud: true, lastEventCount: 0)
 
+proc sumOf(node: JsonNode): int =
+  if node.isNil or node.kind != JArray:
+    return 0
+  for value in node:
+    result += value.getInt()
+
 proc teamKey*(role: Role): string =
   if role == rParent: "parent" else: "child"
 
@@ -237,8 +243,10 @@ proc replayChromeInput*(player: ReplayPlayer, firstHud: bool): ChromeInput =
       "guessTurnsCorrect": player.results{"guess_turns_correct"}.getInt(),
       "childAte": player.results{"child_ate"},
       "delivered": player.results{"delivered"},
-      "wasted": player.results{"wasted"},
-      "reaches": player.results{"reaches"},
+      # `wasted` and `reaches` are per-SLOT arrays in results.json; the endcard
+      # wants the pair's totals, exactly as the live frame reports them.
+      "wasted": sumOf(player.results{"wasted"}),
+      "reaches": sumOf(player.results{"reaches"}),
       "turns": player.results{"turns"}.getInt(),
       "teams": {
         teamKey(player.roles[0]): {"lives": result.scores[0]},
