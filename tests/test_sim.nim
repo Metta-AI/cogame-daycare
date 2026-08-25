@@ -137,6 +137,61 @@ block:
   doAssert sim.cumCounters[child].reachFails[fBanana] +
     sim.turnCounters[child].reachFails[fBanana] == 40
 
+echo "test_sim: a child reach at a BARE tall tree still emits a reach"
+block:
+  # r1 review N6: with an empty canopy the adjacent-source scan skipped the tree
+  # entirely, so the tick degraded to `wait` with no `reach`, no reachAttempts
+  # and no reachFails — the signalling surface went silent exactly while the
+  # child was trying hardest. The note is explicit: the child's tall-tree pick
+  # ALWAYS fails and emits `reach`.
+  var sim = initSim(unitConfig())
+  let child = sim.childSeat
+  let ti = sim.sourceIndex(skTall, fBanana)
+  let (x, y) = sim.adjacentCell(ti)
+  const Attempts = 12
+  var firstRows = 0
+  for attempt in 1 .. Attempts:
+    sim.clearOrders()
+    sim.yard.sources[ti].ripe = 0
+    sim.yard.sources[ti].regrow = 0     # never ripens during the test
+    sim.cogs[child].carry = -1
+    sim.place(child, x, y)
+    sim.place(1 - child, 1, 1)
+    sim.setChildOrder(child, cjShow, fBanana)
+    let before = sim.tick
+    sim.stepTick()
+    doAssert sim.cogs[child].carry == -1, "the child picked a bare tall tree"
+    if attempt == 1:
+      firstRows = sim.eventsAt(before, "reach")
+  doAssert firstRows == 1, "a bare canopy emitted no reach row"
+  doAssert sim.cumCounters[child].reachFails[fBanana] +
+    sim.turnCounters[child].reachFails[fBanana] == Attempts,
+    "a bare canopy was not counted as a failed reach"
+  doAssert sim.cumCounters[child].reachAttempts[fBanana] +
+    sim.turnCounters[child].reachAttempts[fBanana] == Attempts
+
+  # The boundary: the parent CAN harvest, so an empty canopy is nothing to
+  # reach for and its pick still degrades silently to `wait`.
+  var psim = initSim(unitConfig())
+  let parent = psim.parentSeat
+  let pti = psim.sourceIndex(skTall, fApple)
+  let (px, py) = psim.adjacentCell(pti)
+  psim.clearOrders()
+  psim.setOrder(parent, pjProvide, fApple)
+  psim.yard.sources[pti].ripe = 0
+  psim.cogs[parent].carry = -1
+  psim.place(parent, px, py)
+  psim.place(1 - parent, 1, 1)
+  let eventsBefore = psim.events.len
+  psim.resolvePick(parent)
+  doAssert psim.cogs[parent].carry == -1
+  doAssert psim.events.len == eventsBefore,
+    "a bare canopy emitted an event for the parent"
+  doAssert psim.cumCounters[parent].reachFails[fApple] +
+    psim.turnCounters[parent].reachFails[fApple] == 0
+  doAssert psim.cumCounters[parent].reachAttempts[fApple] +
+    psim.turnCounters[parent].reachAttempts[fApple] == 0
+
 echo "test_sim: the child's shrub pick succeeds at exactly " &
   "childShrubPickPermille (10 000 seeded attempts, +/-1 %)"
 block:

@@ -105,19 +105,32 @@ proc resolvePick*(sim: var Sim, seat: int) =
     sim.emit pickRow(sim.tick, seat, g.fruit, "", "ground", g.x, g.y)
     return
   let (named, wanted) = sim.namedFruit(seat)
+  let isChild = sim.roleOf[seat] == rChild
   var chosen = -1
+  var bareTall = -1
   for d in 0 .. 3:
     let si = sim.yard.sourceIndexAt(cog.x + DirDx[d], cog.y + DirDy[d])
     if si < 0: continue
-    if sim.yard.sources[si].ripe < 1: continue
     if named and sim.yard.sources[si].fruit != wanted: continue
+    if sim.yard.sources[si].ripe < 1:
+      # An EMPTY canopy is still a reach for the child: it may never harvest a
+      # tall tree, so the attempt is the signal whether or not there is fruit up
+      # there, and the note is explicit that the child's tall-tree pick "always
+      # fails and emits `reach`". Silence exactly while the child is trying
+      # hardest is what this fallback removes (r1 review, N6). A harvestable
+      # source still wins — this is used only when nothing ripe is adjacent.
+      if isChild and sim.yard.sources[si].kind == skTall and bareTall < 0:
+        bareTall = si
+      continue
     chosen = si
     break
+  if chosen < 0:
+    chosen = bareTall
   if chosen < 0:
     return                        # nothing to reach for: degrades to `wait`
   let source = sim.yard.sources[chosen]
   inc sim.turnCounters[seat].reachAttempts[source.fruit]
-  if sim.roleOf[seat] == rChild:
+  if isChild:
     if source.kind == skTall:
       # The child may NEVER harvest a tall tree. The futile reach is the game's
       # whole signalling surface and must stay cheap: it costs the tick only.
