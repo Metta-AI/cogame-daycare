@@ -102,6 +102,13 @@ const
     ## from `rngLayout` — which is what makes "the parent cannot see it
     ## directly" true of the BYTES and not just of the prompt.
 
+  PickRngSalt* = 0x0C0FFEE1
+    ## `pickRng = seededRng(seed xor PickRngSalt)`: the child's shrub-pick coin.
+    ## Its own stream off the SEED, never a draw from `rngSecret`, because a
+    ## pick outcome IS something the parent observes — it lands in the `reach`
+    ## event and in `reachFails` — and the rule above is that nothing the parent
+    ## can observe is ever drawn from `rngSecret` (r1 review, N4).
+
 type
   DaycareError* = object of CatchableError
 
