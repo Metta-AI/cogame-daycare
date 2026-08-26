@@ -43,7 +43,7 @@ concurrency:
 
 env:
   # Kept on the same pin as coworld-release.yml.
-  COWORLD_PKG: "coworld[auth]==0.1.42"  # keep >= release template's floor; see coworld-release.yml
+  COWORLD_PKG: "coworld[auth]==0.1.43"  # keep >= release template's floor; see coworld-release.yml
 
 jobs:
   submit:
