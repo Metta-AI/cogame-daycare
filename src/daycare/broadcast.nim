@@ -16,7 +16,8 @@ type
     tick*, maxTick*, startTick*: int
     turn*, turns*, ticksPerTurn*: int
     playing*, loop*, skipLulls*, fastForward*, enabled*: bool
-    speed*, lobbySeconds*, hold*: int
+    speed*: float                 ## 0.5 at the replay-only 1/2x, else integer
+    lobbySeconds*, hold*: int
     scores*: array[2, int]
     roles*: array[2, Role]
     names*: array[2, string]
@@ -146,7 +147,7 @@ proc liveChromeInput*(sim: Sim, tracker: var BroadcastTracker,
   result.ticksPerTurn = sim.config.ticksPerTurn
   result.playing = not sim.done
   result.enabled = false
-  result.speed = 1
+  result.speed = 1.0
   result.lobbySeconds = lobbySeconds
   result.scores = [sim.cogs[0].score, sim.cogs[1].score]
   result.roles = sim.roleOf
@@ -210,7 +211,7 @@ proc replayChromeInput*(player: ReplayPlayer, firstHud: bool): ChromeInput =
   result.loop = player.loop
   result.skipLulls = player.skip
   result.fastForward = player.speed > 1
-  result.speed = player.speed
+  result.speed = player.displaySpeed()
   result.scores = player.scoresAt(tick)
   result.roles = player.roles
   result.names = player.names

@@ -116,6 +116,10 @@ proc replayJson*(sim: Sim, results: JsonNode): string =
 # playback
 # ---------------------------------------------------------------------------
 
+const ReplayHalfSpeed* = 0
+  ## `speed` sentinel for the replay-only 1/2x playback (command '5'):
+  ## one tick is spent every other presentation frame (halfPhase parity).
+
 type
   ReplayPlayer* = object
     doc*: JsonNode
@@ -144,6 +148,10 @@ type
     loop*: bool
     skip*: bool
     speed*: int
+      ## Integer playback multiplier, or ReplayHalfSpeed (0) for 1/2x.
+    halfPhase*: bool
+      ## Frame parity while at 1/2x speed: ticks advance only on the odd
+      ## frames, toggled once per advance() frame.
     firstHud*: bool
 
 proc parseFrame(node: JsonNode): Frame =
@@ -318,6 +326,12 @@ proc rightTurnsAt*(player: ReplayPlayer, tick: int): int =
     if row[0] <= tick and row[1] == 1:
       inc result
 
+proc displaySpeed*(player: ReplayPlayer): float =
+  ## The speed the chrome shows: 0.5 at the half-speed sentinel, else the
+  ## integer multiplier.
+  if player.speed == ReplayHalfSpeed: 0.5
+  else: float(player.speed)
+
 proc applyCommand*(player: var ReplayPlayer, text: string) =
   ## The transport commands the starter chrome sends over the sprite client
   ## channel. `s:<tick>` seeks; every seek also dismisses the endcard, which is
@@ -341,6 +355,11 @@ proc applyCommand*(player: var ReplayPlayer, text: string) =
     of 'e': player.tick = player.maxTick
     of 'r': player.loop = not player.loop
     of 'f': player.skip = not player.skip
+    of '+', '=': player.speed = clamp(player.speed * 2, 1, 16)
+    of '-', '_':
+      # 1 div 2 == ReplayHalfSpeed: '-' from 1x lands on 1/2x, the floor.
+      player.speed = player.speed div 2
+    of '5': player.speed = ReplayHalfSpeed
     of '1': player.speed = 1
     of '2': player.speed = 2
     of '3': player.speed = 3
@@ -350,12 +369,19 @@ proc applyCommand*(player: var ReplayPlayer, text: string) =
     else: discard
 
 proc advance*(player: var ReplayPlayer, frames: int) =
+  ## Advances playback by `frames` presentation frames. At 1/2x speed
+  ## (ReplayHalfSpeed) a tick is spent only every other frame, on the
+  ## halfPhase parity toggled as the first statement of each frame.
   if not player.playing:
     return
   for _ in 1 .. max(1, frames):
+    player.halfPhase = not player.halfPhase
     if player.tick >= player.maxTick:
       if player.loop: player.tick = 0
       else: return
+    elif player.speed == ReplayHalfSpeed:
+      if player.halfPhase:
+        player.tick = min(player.maxTick, player.tick + 1)
     else:
       player.tick = min(player.maxTick, player.tick + player.speed)
 
