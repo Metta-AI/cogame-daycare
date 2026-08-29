@@ -150,7 +150,7 @@
   // window.CTF_WIRE is nim-generated (tools/gen_wire_constants.nim) at bundle
   // time; these are the same values, and chrome_common.js reads them at its
   // line 72 exactly as it does in the bundle.
-  var WIRE = { speeds: [1, 2, 3, 4, 8, 16], fps: 24, chromeSpriteId: 4090,
+  var WIRE = { speeds: [0.5, 1, 2, 3, 4, 8, 16], fps: 24, chromeSpriteId: 4090,
                shotFxTicks: 3, shotTrailFalloff: 2 };
   // The page's own adapter seam: `window.CtfStaticReplay` is how the static
   // bundle hands it a core that is fed frames instead of a websocket. The

@@ -308,12 +308,17 @@ block:
   # No overlay in the transport band: the appended layer is clipped to the
   # board region between --topband and --band.
   doAssert "inset: var(--topband, 0px) 0 var(--band, 0px) 0" in page
-  # chrome_common.js ships byte-for-byte, so the wire global keeps its name.
+  # chrome_common.js ships the starter's bytes plus the fleet-wide 0.5x
+  # transport patch and NOTHING else, so the wire global keeps its name.
   let chromeCommon = readFile(root / "client" / "chrome_common.js")
   doAssert "window.ChromeCommon" in chromeCommon
   doAssert "window.CTF_WIRE" in chromeCommon
+  doAssert "0.5: '5'" in chromeCommon,
+    "the speed chips must map the fleet-wide 0.5x chip to command '5'"
+  doAssert "[0.5, 1, 2, 3, 4, 8, 16]" in chromeCommon,
+    "the raw file:// SPEEDS fallback must carry 0.5 too"
   doAssert "daycare" notin chromeCommon.toLowerAscii(),
-    "chrome_common.js was edited; it must ship byte-for-byte"
+    "chrome_common.js was edited beyond the 0.5x transport patch"
   let core = readFile(root / "client" / "broadcast_core.js")
   doAssert "daycare" notin core.toLowerAscii(),
     "broadcast_core.js was edited; the board draw lives in Nim, not here"

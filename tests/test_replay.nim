@@ -119,4 +119,31 @@ for variant in AllVariants:
   echo "  ", variant, ": ", replay.len, " bytes, ", doc["events"].len,
     " events, ", ticksPlayed, " frames"
 
+echo "test_replay: half speed is a replay-only crawl"
+block:
+  ## The fleet-wide 1/2x replay speed: command '5' selects the ReplayHalfSpeed
+  ## sentinel, the chrome shows 0.5, and advance() spends one tick every OTHER
+  ## frame (halfPhase parity). '-' floors at 1/2x; '+' climbs back out.
+  var player = ReplayPlayer(maxTick: 100, playing: true, speed: 1)
+  player.applyCommand("5")
+  doAssert player.speed == ReplayHalfSpeed, "'5' must select 1/2x"
+  doAssert player.displaySpeed() == 0.5,
+    "the chrome speed at 1/2x is 0.5, got " & $player.displaySpeed()
+  player.halfPhase = false
+  player.advance(1)
+  doAssert player.tick == 1, "the odd frame at 1/2x spends one tick"
+  player.advance(1)
+  doAssert player.tick == 1, "the even frame at 1/2x spends no tick"
+  player.advance(10)
+  doAssert player.tick == 6, "10 more frames advance 5 ticks at 1/2x"
+  player.applyCommand("+")
+  doAssert player.speed == 1, "'+' from 1/2x lands on 1x"
+  player.applyCommand("-")
+  doAssert player.speed == ReplayHalfSpeed, "'-' from 1x lands on 1/2x"
+  player.applyCommand("-")
+  doAssert player.speed == ReplayHalfSpeed, "1/2x is the floor"
+  player.applyCommand("2")
+  doAssert player.speed == 2 and player.displaySpeed() == 2.0,
+    "the integer chips still work after 1/2x"
+
 echo "test_replay: OK"

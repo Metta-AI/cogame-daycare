@@ -70,7 +70,7 @@ window.ChromeCommon = function (ctx) {
   // Engine-authoritative wire constants (spliced by the server / static
   // bundle); the literals are fallbacks for raw file:// opens only.
   var WIRE = window.CTF_WIRE || {};
-  var SPEEDS = WIRE.speeds || [1, 2, 3, 4, 8, 16];
+  var SPEEDS = WIRE.speeds || [0.5, 1, 2, 3, 4, 8, 16];
   var FPS = WIRE.fps || 24;
 
   // ---- UI toggles (externally configurable) --------------------------------
@@ -434,7 +434,7 @@ window.ChromeCommon = function (ctx) {
   // speed→command map); clicks go down the page's own command channel.
   var speedChipEls = {};
   (function () {
-    var host = $('speedchips'), map = { 1: '1', 2: '2', 3: '3', 4: '4', 8: '8', 16: '6' };
+    var host = $('speedchips'), map = { 0.5: '5', 1: '1', 2: '2', 3: '3', 4: '4', 8: '8', 16: '6' };
     SPEEDS.forEach(function (v) {
       var b = document.createElement('button');
       b.className = 'chip';
