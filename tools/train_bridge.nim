@@ -15,6 +15,8 @@ proc seedOf(value: string): int =
   int(hash and 0x7fffffff'u32)
 
 proc decision(game: Sim, seat, id: int): JsonNode =
+  let required = if game.roleOf[seat] == rParent:
+    %*["job", "guess"] else: %*["job"]
   %*{
     "kind": "decision",
     "game": "daycare",
@@ -29,7 +31,7 @@ proc decision(game: Sim, seat, id: int): JsonNode =
       {"role": "user", "content": userPrompt(game, seat, OperatorPrompt)}
     ],
     "speech_messages": [],
-    "action_schema": {"type": "object", "required": ["job"]},
+    "action_schema": {"type": "object", "required": required},
     "typed_question": newJNull()
   }
 
