@@ -29,6 +29,23 @@ uv run python -m metta_posttrain.train --dataset /tmp/daycare \
 ```
 
 The dataset is imitation of scripted play; its loss does not measure policy
-quality. Daycare's role-specific jobs and fruit choices could support a
-factorized discrete RL codec, but the current Metta RL and PufferLib bridges
-do not expose its action and observation.
+quality.
+
+For reinforcement learning, compile the persistent bridge and test all four
+certified variants:
+
+```bash
+nim c -d:release --path:src -o:daycare-train-bridge tools/train_bridge.nim
+python3 tools/test_train_bridge.py ./daycare-train-bridge
+```
+
+From Metta, use either `recipes.external.coworld.train` for native PufferLib or
+`recipes.external.coworld_metta_rl.train` for Metta RL. Pass a command with the
+absolute bridge and manifest paths, the variant ID, and `players=2`. Set a
+training timestep limit. The bridge exposes 32 player-visible numeric values
+and a fixed 12-choice catalog. It masks unused choices by role and uses the
+published caretaker and stubborn baselines for opponents and teacher labels.
+
+Daycare is cooperative: both seats receive the same score. The bridge supplies
+an explicit terminal utility `2 * score / (score + par) - 1`, which is monotonic
+in the shared score. This needs Metta #24683, stacked on #24679 and #24573.
