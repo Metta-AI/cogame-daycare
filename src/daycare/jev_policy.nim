@@ -12,17 +12,26 @@ proc chooseOrder*(observation: JsonNode, guidance: string): JsonNode =
       for fruit in ["apple", "banana"]:
         for job in ["provide", "stock"]:
           let key = job & "_" & fruit & "_guess_" & guess
-          criteria[key] = %(job & " " & fruit & "; guess " & guess)
+          criteria[key] = %(if job == "provide":
+            "Deliver " & fruit & " beside the child to feed it; guess " & guess
+          else:
+            "Put " & fruit & " on the basket mat for the child; guess " & guess)
           orders[key] = %*{"job": job, "fruit": fruit, "guess": guess}
       for job in ["watch", "idle"]:
         let key = job & "_guess_" & guess
-        criteria[key] = %(job & "; guess " & guess)
+        criteria[key] = %(if job == "watch":
+          "Observe the child without providing food; guess " & guess
+        else:
+          "Do nothing and provide no food; guess " & guess)
         orders[key] = %*{"job": job, "guess": guess}
   elif role == "child":
     for fruit in ["apple", "banana"]:
       for job in ["seek", "show"]:
         let key = job & "_" & fruit
-        criteria[key] = %(job & " " & fruit)
+        criteria[key] = %(if job == "seek":
+          "Seek and eat reachable " & fruit
+        else:
+          "Signal desire for " & fruit & " at a tall tree without eating")
         orders[key] = %*{"job": job, "fruit": fruit}
     for job in ["graze", "beg", "idle"]:
       criteria[job] = %job
@@ -57,9 +66,11 @@ proc chooseOrder*(observation: JsonNode, guidance: string): JsonNode =
     headers["x-coworld-player-slot"] = $observation["slot"].getInt()
   let body = %*{
     "model": model,
-    "state": "You are playing Daycare. Both seats share the score. " &
-      "The parent infers the child's hidden fruit preference from behavior; " &
-      "the child signals its own preference through actions. Use only this " &
+    "state": "You are playing Daycare. Both seats share the score, awarded " &
+      "only when the child eats. The parent can harvest tall trees but the " &
+      "child cannot. Delivering fruit lets the child eat; watching and idling " &
+      "provide no food. The parent infers the child's hidden fruit preference " &
+      "from behavior; the child signals its own preference through actions. Use only this " &
       "seat observation:\n" & $observation &
       "\nStrategy guidance: " & guidance,
     "questions": {"order": {
