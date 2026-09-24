@@ -74,6 +74,7 @@ type
     sim: Sim
     prompts: seq[string]
     scripted: seq[ScriptKind]
+    jev: seq[bool]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -246,7 +247,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       withLock stateLock:
         for slot in 0 .. 1:
           if state.playerSockets.hasKey(slot) and
-              state.prompts[slot].len == 0 and state.scripted[slot] == skNone:
+              state.prompts[slot].len == 0 and state.scripted[slot] == skNone and
+              not state.jev[slot]:
             pending = true
       if not pending:
         break
@@ -293,6 +295,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var prompts: seq[string]
       var scriptedKinds: seq[ScriptKind]
+      var jev: seq[bool]
       withLock stateLock:
         if playDeadline > 0.0 and epochTime() > playDeadline:
           echo "daycare: episode deadline reached after ",
@@ -304,6 +307,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         simCopy = state.sim
         prompts = state.prompts
         scriptedKinds = state.scripted
+        jev = state.jev
         ## A seat whose socket died mid-episode plays `caretaker` for every
         ## remaining turn; the episode never blocks on a socket.
         for slot in 0 .. 1:
@@ -312,7 +316,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             scriptedKinds[slot] = skCaretaker
 
       let batchStart = epochTime()
-      let orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds)
+      let orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds, jev)
 
       withLock stateLock:
         for slot in 0 .. 1:
@@ -494,9 +498,11 @@ proc websocketHandler(
           elif node.kind == JBool:
             (if node.getBool(): skCaretaker else: skNone)
           else: parseScriptKind(node.getStr())
+        let jev = payload{"jev"}.getBool(false)
         withLock stateLock:
           state.prompts[slot] = prompt
           state.scripted[slot] = kind
+          state.jev[slot] = jev
         echo "daycare: slot ", slot, " delivered a prompt (", prompt.len,
           " chars", (if kind != skNone: ", scripted " & $kind else: ""), ")"
       except CatchableError as error:
@@ -535,6 +541,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.sim = initSim(config, policyNames)
   state.prompts = newSeq[string](2)
   state.scripted = newSeq[ScriptKind](2)
+  state.jev = newSeq[bool](2)
   state.servingUntil = 0
 
   let router = buildRouter()

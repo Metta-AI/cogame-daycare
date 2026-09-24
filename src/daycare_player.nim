@@ -1,4 +1,4 @@
-## Daycare player: a policy is just a prompt.
+## Daycare player: a policy delivers a prompt, Jev flag, or scripted baseline.
 ##
 ## Forked from `cogame-bullwhip/src/bullwhip_player.nim`. Connects to the game,
 ## delivers its prompt (from PLAYER_PROMPT, or a default caregiving strategy),
@@ -39,9 +39,11 @@ when isMainModule:
   if prompt.len == 0:
     prompt = DefaultPrompt
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
+  let jev = getEnv("PLAYER_JEV") == "1"
 
   proc promptFrame(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted,
+      "jev": jev}
 
   echo "daycare player: connecting to game"
   let socket = newWebSocket(url)

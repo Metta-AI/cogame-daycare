@@ -1,5 +1,12 @@
 [
   {
+    "name": "daycare-jev",
+    "run": "/bin/daycare-player",
+    "env": {
+      "PLAYER_JEV": "1"
+    }
+  },
+  {
     "name": "daycare-attentive",
     "run": "/bin/daycare-player",
     "env": {
