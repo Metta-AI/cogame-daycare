@@ -1,9 +1,9 @@
-## Daycare player: a policy delivers a prompt, Jev flag, or scripted baseline.
+## Daycare player: prompt, scripted, or external action policy.
 ##
 ## Forked from `cogame-bullwhip/src/bullwhip_player.nim`. Connects to the game,
-## delivers its prompt (from PLAYER_PROMPT, or a default caregiving strategy),
-## then only listens until the final frame. ALL decision-making happens inside
-## the game container, which is what makes one parallel batch per turn possible.
+## Prompt policies deliver PLAYER_PROMPT to the game's Claude adapter.
+## PLAYER_JEV=1 receives a private observation, calls System One here, and
+## sends a standing order back through the generic action protocol.
 ##
 ## PLAYER_SCRIPTED=caretaker (or 1) registers the seat as the built-in working
 ## baseline instead; PLAYER_SCRIPTED=stubborn as the anti-theory-of-mind foil.
@@ -15,6 +15,7 @@
 
 import
   std/[json, options, os, strutils],
+  daycare/jev_policy,
   whisky
 
 const DefaultPrompt = """
@@ -38,12 +39,19 @@ when isMainModule:
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0:
     prompt = DefaultPrompt
-  let scripted = getEnv("PLAYER_SCRIPTED").strip()
-  let jev = getEnv("PLAYER_JEV") == "1"
+  var scripted = getEnv("PLAYER_SCRIPTED").strip()
+  let jevRequested = getEnv("PLAYER_JEV") == "1"
+  let jev = jevRequested and (
+    getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip().len > 0 or
+    getEnv("METTA_CAPTURE_URL").strip().len > 0 or
+    getEnv("TYPESAFE_API_KEY").strip().len > 0)
+  if jevRequested and not jev:
+    scripted = "caretaker"
+    echo "daycare player: no Jev transport; using caretaker"
 
   proc promptFrame(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted,
-      "jev": jev}
+    if jev: $ %*{"type": "register", "control": "external"}
+    else: $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
 
   echo "daycare player: connecting to game"
   let socket = newWebSocket(url)
@@ -79,6 +87,11 @@ when isMainModule:
         of "final":
           echo "daycare player: final scores ", payload{"scores"}
           break
+        of "observation":
+          if jev:
+            let order = chooseOrder(payload["observation"], prompt)
+            socket.send($ %*{"type": "action", "turn": payload["turn"],
+              "order": order})
         else:
           discard
       except CatchableError as error:

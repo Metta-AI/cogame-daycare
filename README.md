@@ -86,8 +86,8 @@ coworld upload-policy coworld-daycare:latest --name relh-daycare-jev \
 ```
 
 The Jev menu has 12 parent orders and seven child orders. It preserves the
-parent's private inference and the child's secret preference. A Jev policy can
-share the game's simultaneous request batch with a prompt policy. The parent
+parent's private inference and the child's secret preference. The Jev player
+acts concurrently with the game's prompt-policy request batch. The parent
 guess and delivered fruit can differ. Jev supplies an order; it does not write
 private notes or spectator hunches.
 

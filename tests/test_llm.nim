@@ -144,8 +144,7 @@ block:
   sim.turn = 1
   let client = newLlmClient(cfg)
   doAssert client.disabled
-  let orders = client.decideAll(sim, @[0, 1], @["", ""],
-    @[skNone, skNone], @[false, false])
+  let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone])
   doAssert orders.len == 2
   for seat in 0 .. 1:
     var hedge = 0
@@ -158,7 +157,7 @@ block:
 
 type StubMode = enum
   smJunk, smThrottled, smForbidden, smSlow, smValid, smValidThenInvalid,
-  smParallelProbe, smJev
+  smParallelProbe
 
 var stubMode: Atomic[int]
 var stubHits: Atomic[int]
@@ -183,29 +182,6 @@ proc stubHandler(request: Request) {.gcsafe.} =
   headers["content-type"] = "application/json"
   let mode = StubMode(stubMode.load())
   case mode
-  of smJev:
-    let payload = parseJson(request.body)
-    if not payload.hasKey("questions"):
-      let reply =
-        if "THE CHILD'S PREFERENCE IS NEVER SHOWN TO YOU" in request.body:
-          ValidParentReply
-        else: ValidChildReply
-      request.respond(200, headers, anthropicBody(reply))
-      discard stubConcurrent.fetchAdd(-1)
-      return
-    let criteria = payload["questions"]["order"]["criteria"]
-    let choice =
-      if "THE CHILD'S PREFERENCE IS NEVER SHOWN TO YOU" in request.body:
-        "provide_banana_guess_banana"
-      else:
-        "show_banana"
-    var probabilities = newJObject()
-    for key, description in criteria.pairs:
-      discard description
-      probabilities[key] = %(if key == choice: 1.0 else: 0.0)
-    request.respond(200, headers, $ %*{"answers": {"order": {
-      "type": "choice", "choice": choice, "confidence": 1.0,
-      "probabilities": probabilities}}})
   of smJunk:
     sleep(60)
     request.respond(200, headers, anthropicBody(
@@ -259,52 +235,6 @@ sleep(400)
 putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:" & $StubPort)
 putEnv("AWS_BEARER_TOKEN_BEDROCK", "stub-token")
 
-echo "test_llm: Jev choices validate their full probability set"
-block:
-  let questions = jevQuestions(rParent)
-  let criteria = questions["order"]["criteria"]
-  doAssert criteria.len == 12
-  var probabilities = newJObject()
-  for choice, description in criteria.pairs:
-    discard description
-    probabilities[choice] = %(if choice == "stock_apple_guess_banana":
-      1.0 else: 0.0)
-  let answer = %*{"answers": {"order": {"type": "choice",
-    "choice": "stock_apple_guess_banana", "confidence": 1.0,
-    "probabilities": probabilities}}}
-  let order = jevOrder(rParent, answer, questions)
-  doAssert order.pjob == pjStock and order.fruit == fApple and
-    order.guess == fBanana
-  answer["answers"]["order"]["probabilities"].delete("idle_guess_apple")
-  var rejected = false
-  try:
-    discard jevOrder(rParent, answer, questions)
-  except DaycareError:
-    rejected = true
-  doAssert rejected
-
-echo "test_llm: Jev and Haiku seats share one request batch"
-block:
-  putEnv("METTA_CAPTURE_URL", "http://127.0.0.1:" & $StubPort)
-  putEnv("METTA_CAPTURE_KEY", "stub-key")
-  stubMode.store(ord(smJev))
-  stubHits.store(0)
-  var cfg = variantConfig("daycare", 5)
-  var sim = initSim(cfg)
-  sim.turn = 1
-  let client = newLlmClient(cfg)
-  let jev = if sim.parentSeat == 0: @[true, false] else: @[false, true]
-  let orders = client.decideAll(sim, @[0, 1], @["", ""],
-    @[skNone, skNone], jev)
-  doAssert stubHits.load() == 2
-  doAssert client.lastBatchSize == 2
-  doAssert orders[sim.parentSeat].pjob == pjProvide
-  doAssert orders[sim.parentSeat].fruit == fBanana
-  doAssert orders[sim.parentSeat].source == osLlm
-  doAssert orders[sim.childSeat].source == osLlm
-  delEnv("METTA_CAPTURE_URL")
-  delEnv("METTA_CAPTURE_KEY")
-
 proc stubbedRun(mode: StubMode, llmTimeout = 2): tuple[orders: seq[Order],
     hits: int, peak: int, disabled: bool, ms: int, batch: int] =
   stubMode.store(ord(mode))
@@ -319,7 +249,7 @@ proc stubbedRun(mode: StubMode, llmTimeout = 2): tuple[orders: seq[Order],
   doAssert not client.disabled, "the stub transport did not come up"
   let started = epochTime()
   let orders = client.decideAll(sim, @[0, 1],
-    @["be legible", "be legible"], @[skNone, skNone], @[false, false])
+    @["be legible", "be legible"], @[skNone, skNone])
   let ms = int((epochTime() - started) * 1000.0)
   (orders, stubHits.load(), stubPeak.load(), client.disabled, ms,
    client.lastBatchSize)
@@ -359,8 +289,7 @@ block:
   var elapsed: array[2, int]
   for turn in 0 .. 1:
     let started = epochTime()
-    let orders = client.decideAll(sim, @[0, 1], @["", ""],
-      @[skNone, skNone], @[false, false])
+    let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone])
     elapsed[turn] = int((epochTime() - started) * 1000.0)
     doAssert orders.len == 2
     doAssert client.lastBatchSize == 2,
