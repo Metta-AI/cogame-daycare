@@ -251,13 +251,12 @@ block:
   doAssert results["reason"].getStr() == "complete"
   doAssert results["ending"].getStr() == "turn_limit"
 
-echo "test_manifest: the policy set is two prompt champions, Jev, and two fillers"
+echo "test_manifest: the CI policy set is two prompt champions and two fillers"
 block:
   let policies = parseJson(readFile(root / "tools" / "ci" / "policies.json"))
-  doAssert policies.len == 5, $policies.len
+  doAssert policies.len == 4, $policies.len
   var prompts = 0
   var scripted = 0
-  var jev = 0
   var owners: seq[string]
   var names: seq[string]
   for policy in policies:
@@ -266,10 +265,7 @@ block:
     doAssert name.startsWith("daycare-"), name
     doAssert policy["run"].getStr() == "/bin/daycare-player"
     let env = policy["env"]
-    if env.hasKey("PLAYER_JEV"):
-      inc jev
-      doAssert env["PLAYER_JEV"].getStr() == "1", name
-    elif env.hasKey("PLAYER_PROMPT"):
+    if env.hasKey("PLAYER_PROMPT"):
       inc prompts
       doAssert env["PLAYER_PROMPT"].getStr().len > 400, name
       # Without USE_BEDROCK the platform gives the player pod no Bedrock
@@ -289,13 +285,11 @@ block:
       owners.add policy["player"].getStr()
   doAssert prompts == 2, $prompts & " prompt policies"
   doAssert scripted == 2, $scripted & " scripted policies"
-  doAssert jev == 1, $jev & " Jev policies"
-  doAssert names[0] == "daycare-jev" and names[1] == "daycare-attentive" and
-    names[2] == "daycare-provider"
+  doAssert names[0] == "daycare-attentive" and names[1] == "daycare-provider"
   # Champion #2 must be uploaded while daveey-1 is the active player, or
   # submitting it as daveey-1 409s "already assigned to player".
   doAssert owners == @["ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"], $owners
-  doAssert policies[2]["player"].getStr() ==
+  doAssert policies[1]["player"].getStr() ==
     "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
   # Filler names must differ from champion names, or the platform renames a
   # scored champion "Baseline (N)".
