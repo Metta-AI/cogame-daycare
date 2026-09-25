@@ -251,7 +251,7 @@ block:
   doAssert results["reason"].getStr() == "complete"
   doAssert results["ending"].getStr() == "turn_limit"
 
-echo "test_manifest: the policy set is two prompt champions plus two fillers"
+echo "test_manifest: the CI policy set is two prompt champions and two fillers"
 block:
   let policies = parseJson(readFile(root / "tools" / "ci" / "policies.json"))
   doAssert policies.len == 4, $policies.len

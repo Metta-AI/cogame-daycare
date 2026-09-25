@@ -74,6 +74,11 @@ type
     sim: Sim
     prompts: seq[string]
     scripted: seq[ScriptKind]
+    external: seq[bool]
+    registered: seq[bool]
+    awaitingTurn: int
+    pendingOrders: array[2, Order]
+    received: array[2, bool]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -246,7 +251,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       withLock stateLock:
         for slot in 0 .. 1:
           if state.playerSockets.hasKey(slot) and
-              state.prompts[slot].len == 0 and state.scripted[slot] == skNone:
+              not state.registered[slot]:
             pending = true
       if not pending:
         break
@@ -293,6 +298,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var prompts: seq[string]
       var scriptedKinds: seq[ScriptKind]
+      var external: seq[bool]
       withLock stateLock:
         if playDeadline > 0.0 and epochTime() > playDeadline:
           echo "daycare: episode deadline reached after ",
@@ -304,17 +310,44 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         simCopy = state.sim
         prompts = state.prompts
         scriptedKinds = state.scripted
+        external = state.external
+        state.awaitingTurn = turn
         ## A seat whose socket died mid-episode plays `caretaker` for every
         ## remaining turn; the episode never blocks on a socket.
         for slot in 0 .. 1:
           if not state.playerSockets.hasKey(slot) and
               scriptedKinds[slot] == skNone:
             scriptedKinds[slot] = skCaretaker
+          if external[slot] and state.playerSockets.hasKey(slot):
+            scriptedKinds[slot] = skCaretaker
+            state.received[slot] = false
+            state.playerSockets[slot].send($ %*{
+              "type": "observation", "turn": turn,
+              "observation": state.sim.playerStateJson(slot)})
+          else:
+            external[slot] = false
 
       let batchStart = epochTime()
-      let orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds)
+      var orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds)
+      let actionDeadline = batchStart + config.llmTimeoutSeconds.float
+      while epochTime() < actionDeadline:
+        var waiting = false
+        withLock stateLock:
+          for slot in 0 .. 1:
+            if external[slot] and not state.received[slot]:
+              waiting = true
+        if not waiting:
+          break
+        sleep(20)
 
       withLock stateLock:
+        state.awaitingTurn = 0
+        for slot in 0 .. 1:
+          if external[slot]:
+            if state.received[slot]:
+              orders[slot] = state.pendingOrders[slot]
+            else:
+              orders[slot].source = osFallback
         for slot in 0 .. 1:
           var order = orders[slot]
           try:
@@ -481,6 +514,23 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
+        if payload{"type"}.getStr() == "register":
+          if payload["control"].getStr() != "external":
+            raise newException(DaycareError, "unknown player control")
+          withLock stateLock:
+            state.external[slot] = true
+            state.registered[slot] = true
+          return
+        if payload{"type"}.getStr() == "action":
+          withLock stateLock:
+            if state.external[slot] and state.awaitingTurn ==
+                payload["turn"].getInt() and not state.received[slot]:
+              var order = parseOrder(state.sim.roleOf[slot], payload["order"])
+              state.sim.validateOrder(slot, order)
+              order.source = osExternal
+              state.pendingOrders[slot] = order
+              state.received[slot] = true
+          return
         if payload{"type"}.getStr() != "prompt":
           echo "daycare: ignoring player frame of type ",
             payload{"type"}.getStr()
@@ -497,6 +547,8 @@ proc websocketHandler(
         withLock stateLock:
           state.prompts[slot] = prompt
           state.scripted[slot] = kind
+          state.external[slot] = false
+          state.registered[slot] = true
         echo "daycare: slot ", slot, " delivered a prompt (", prompt.len,
           " chars", (if kind != skNone: ", scripted " & $kind else: ""), ")"
       except CatchableError as error:
@@ -535,6 +587,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.sim = initSim(config, policyNames)
   state.prompts = newSeq[string](2)
   state.scripted = newSeq[ScriptKind](2)
+  state.external = newSeq[bool](2)
+  state.registered = newSeq[bool](2)
   state.servingUntil = 0
 
   let router = buildRouter()

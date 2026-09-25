@@ -16,7 +16,7 @@ const
     ## encoding. Bump this whenever a rule changes what a seed produces.
 
   ReplayProtocol* = "daycare.replay.v1"
-  PlayerProtocol* = "daycare.player.v1"
+  PlayerProtocol* = "daycare.player.v2"
 
   # ---- the yard -------------------------------------------------------------
   YardCols* = 24
@@ -145,6 +145,7 @@ type
     osLlm = "llm"
     osRetry = "retry"
     osFallback = "fallback"
+    osExternal = "external"
 
   Order* = object
     ## One seat's standing order for a whole turn. `pjob` is read for a parent

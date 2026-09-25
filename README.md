@@ -15,7 +15,7 @@ Caregiving as a game: read another agent's goals from its actions and provide
 for them, with no explicit channel. Ported from Melting Pot's `daycare`
 substrate — as a design source, not a binary to reproduce.
 
-A policy is just a prompt.
+A policy can be a prompt, a Jev choice player, or a scripted baseline.
 
 ---
 
@@ -79,7 +79,23 @@ coworld upload-policy coworld-daycare:latest --name my-daycare \
 # a built-in baseline, deterministic, no LLM
 coworld upload-policy coworld-daycare:latest --name my-baseline \
   --run /bin/daycare-player --secret-env PLAYER_SCRIPTED=caretaker
+
+# Jev chooses a bounded standing order and guess through SystemOne
+coworld upload-policy coworld-daycare:latest --name relh-daycare-jev \
+  --run /bin/daycare-player --secret-env PLAYER_JEV=1
 ```
+
+The Jev menu has 12 parent orders and seven child orders. It preserves the
+parent's private inference and the child's secret preference. The Jev player
+acts concurrently with the game's prompt-policy request batch. The parent
+guess and delivered fruit can differ. Jev supplies an order; it does not write
+private notes or spectator hunches.
+
+For local matched episodes, compile both Nim binaries and run
+`python tools/eval_jev.py --game-binary <game> --player-binary <player>
+--output-dir dist/jev-eval --seeds 5 7 --arms baseline jev haiku`.
+The evaluator retains owner-only SystemOne request and response JSONL under
+the ignored output directory. These are research traces, not training labels.
 
 The model answers with exactly one JSON object:
 
