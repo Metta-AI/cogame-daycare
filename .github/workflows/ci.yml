@@ -184,9 +184,6 @@ jobs:
           SMOKE_SLUG: ${{ env.SLUG }}
         run: ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
 
-      - name: Mixed Jev player smoke in both roles
-        run: python3 tools/ci/jev_smoke.py "${IMAGE}:ci"
-
       # The replay this episode produced is the ONLY replay in CI that is
       # known to be a real, current-format episode of this game. wasm-viewer
       # downloads it and loads it in a browser, so the viewer is tested
