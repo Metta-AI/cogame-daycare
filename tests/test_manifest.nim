@@ -113,15 +113,11 @@ block:
   doAssert not manifest["certification"]["game_config"].hasKey("tokens"),
     "the cert fixture must not carry runner-managed tokens"
 
-echo "test_manifest: the coworld secret reaches the GAME container"
+echo "test_manifest: hosted inference needs no provider secret"
 block:
-  let env = manifest["game"]["runnable"]["env"]
-  doAssert env.hasKey("ANTHROPIC_API_KEY_URI"),
-    "without this the hosted game never sees the secret and every league " &
-    "episode silently plays scripted (hive, 2026-08-23)"
-  let uri = env["ANTHROPIC_API_KEY_URI"].getStr()
+  doAssert manifest{"game"}{"runnable"}{"env"}{"ANTHROPIC_API_KEY_URI"}.isNil,
+    "hosted LLM uses the platform sidecar without provider secrets"
   let name = manifest["game"]["name"].getStr()
-  doAssert uri == "secret://coworld/" & name & "/anthropic_api_key", uri
   # The namespace must equal game.name exactly, not the page slug.
   doAssert name == "daycare"
 
