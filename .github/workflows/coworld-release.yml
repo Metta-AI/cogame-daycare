@@ -1,25 +1,23 @@
-# Build -> certify -> upload policies -> upload coworld -> put secret.
+# Build -> certify -> upload policies -> upload coworld.
 #
 # Goes to:  .github/workflows/coworld-release.yml  in the coworld repo.
 # Substitute: daycare  (lowercase game slug; also the Coworld name and the
-#                      secret namespace, e.g. bullwhip)
 #             coworld-daycare (local image name WITHOUT a tag, must match compose.yaml
 #                      minus ":latest", e.g. coworld-bullwhip)
 #
 # The step ORDER is load-bearing:
-#   build -> certify -> upload-policy (xN) -> upload-coworld -> secret put
+#   build -> certify -> upload-policy (xN) -> upload-coworld
 # Policies MUST be uploaded before `upload-coworld`: OBSERVED, `upload-policy`
 # reports the local image missing when it runs afterwards. (The mechanism is
 # not "upload-coworld prunes the image" -- no prune/rmi exists anywhere in the
-# CLI; only the ordering is established, so treat it as empirical.) `secret
-# put` MUST come after upload-coworld, because the secret namespace does not
-# exist until the Coworld does.
+# CLI; only the ordering is established, so treat it as empirical.)
 #
-# Repo secrets required: SOFTMAX_TOKEN, ANTHROPIC_API_KEY (set by coworld-builder's propagate-secrets.yml).
+# Repo secrets required: SOFTMAX_TOKEN (set by coworld-builder's propagate-secrets.yml).
 #
 # The agent reads the outcome back with:
 #   gh run download <run_id> -R Metta-AI/cogame-daycare -n release-result \
 #     -D /tmp/rr && jq . /tmp/rr/release-result.json
+# Hosted inference uses the platform LLM sidecar without provider secrets.
 name: Coworld release
 
 on:
@@ -36,16 +34,6 @@ on:
         required: false
         default: ""
         type: string
-      secret_key_name:
-        description: "Coworld secret key to write ANTHROPIC_API_KEY into"
-        required: false
-        default: "anthropic_api_key"
-        type: string
-      put_secret:
-        description: "Write the ANTHROPIC_API_KEY Coworld secret after upload"
-        required: false
-        default: true
-        type: boolean
       skip_certify:
         description: "Skip local certification (debugging only; never for a real release)"
         required: false
@@ -237,7 +225,7 @@ jobs:
 
           def unset_player():
               # Never leave the runner acting as someone else: every later step
-              # in this job (upload-coworld, secret put) would inherit it.
+              # in this job (upload-coworld) would inherit it.
               result = softmax("player", "unset")
               if result.returncode != 0:
                   print(f"::warning::softmax player unset failed: "
@@ -357,28 +345,6 @@ jobs:
               raise SystemExit(f"upload-coworld exited {rc}")
           PY
 
-      - name: Put the Coworld secret
-        # AFTER upload-coworld: the secret namespace is the Coworld's.
-        if: ${{ inputs.put_secret != false }}
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          SECRET_KEY_NAME: ${{ inputs.secret_key_name }}
-        run: |
-          set -euo pipefail
-          echo "Put the Coworld secret" > "$RR/current_step"
-          if [ -z "${ANTHROPIC_API_KEY}" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is not set on this repo (dispatch propagate-secrets.yml in Metta-AI/coworld-builder)"
-            exit 1
-          fi
-          secret_file="$(mktemp)"
-          chmod 600 "$secret_file"
-          printf '%s' "${ANTHROPIC_API_KEY}" > "$secret_file"
-          uvx --from "$COWORLD_PKG" coworld secret put \
-            "$SLUG" "${SECRET_KEY_NAME}" "$secret_file"
-          rm -f "$secret_file"
-          uvx --from "$COWORLD_PKG" coworld secret list "$SLUG"
-          echo '{"ok": true}' > "$RR/secret.json"
-
       - name: Assemble release-result.json
         if: always()
         env:
@@ -404,7 +370,6 @@ jobs:
           upload = load("upload.json", {})
           policies = load("policies.json", [])
           policy_errors = load("policy_errors.json", [])
-          secret = load("secret.json", None)
           current_step = ""
           step_path = os.path.join(rr, "current_step")
           if os.path.exists(step_path):
@@ -445,7 +410,6 @@ jobs:
                   "output_tail": certify.get("output_tail"),
               },
               "policies": policies,
-              "secret_put": bool(secret and secret.get("ok")),
               "errors": errors,
               "step_failed": None if job_status == "success" else (current_step or None),
           }
@@ -464,7 +428,6 @@ jobs:
               f"| canonical | **{canonical_raw or 'unknown'}** |",
               f"| hosted smoke | {result['hosted_smoke'] or 'not reported'} |",
               f"| replay liveness | {(certify or {}).get('replay_liveness') or 'not certified'} |",
-              f"| secret put | {result['secret_put']} |",
               "",
               "### Policies",
               "",
