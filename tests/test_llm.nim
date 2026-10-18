@@ -10,7 +10,7 @@
 import std/[atomics, json, os, strformat, strutils, times, unicode]
 import mummy, mummy/routers
 import helpers
-import daycare/llm
+import daycare/[llm, prompts]
 
 # ---------------------------------------------------------------------------
 # reply parsing
@@ -144,7 +144,7 @@ block:
   sim.turn = 1
   let client = newLlmClient(cfg)
   doAssert client.disabled
-  let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone])
+  let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone], PromptSelection())
   doAssert orders.len == 2
   for seat in 0 .. 1:
     var hedge = 0
@@ -249,7 +249,7 @@ proc stubbedRun(mode: StubMode, llmTimeout = 2): tuple[orders: seq[Order],
   doAssert not client.disabled, "the stub transport did not come up"
   let started = epochTime()
   let orders = client.decideAll(sim, @[0, 1],
-    @["be legible", "be legible"], @[skNone, skNone])
+    @["be legible", "be legible"], @[skNone, skNone], PromptSelection())
   let ms = int((epochTime() - started) * 1000.0)
   (orders, stubHits.load(), stubPeak.load(), client.disabled, ms,
    client.lastBatchSize)
@@ -289,7 +289,7 @@ block:
   var elapsed: array[2, int]
   for turn in 0 .. 1:
     let started = epochTime()
-    let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone])
+    let orders = client.decideAll(sim, @[0, 1], @["", ""], @[skNone, skNone], PromptSelection())
     elapsed[turn] = int((epochTime() - started) * 1000.0)
     doAssert orders.len == 2
     doAssert client.lastBatchSize == 2,

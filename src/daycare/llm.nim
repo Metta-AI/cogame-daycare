@@ -30,7 +30,7 @@ import
   std/[json, math, os, strutils, times, unicode],
   bitworld/runtime,
   curly,
-  sim_types, sim_state, sim, scripted
+  sim_types, sim_state, sim, scripted, prompts, evidence
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -54,6 +54,8 @@ type
     maxOutputTokens: int
     timeoutSeconds: int
     disabled*: bool
+    attemptIds*: array[2, seq[string]]
+    selectedAttemptIds*: array[2, string]
     lastBatchSize*: int
       ## Requests in the most recent `makeRequests` call. Decisions inside a
       ## turn are SIMULTANEOUS, so this is the number of open seats — 2 on turn
@@ -212,13 +214,12 @@ proc historyTable(sim: Sim, role: Role): string =
     lines.add row
   "PER-TURN HISTORY:\n" & lines.join("\n")
 
-proc systemPrompt*(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
   let role = sim.roleOf[seat]
   let me = sim.names[seat].toUpperAscii()
   let other = sim.names[1 - seat].toUpperAscii()
-  result.add "You are " & me & ", the " & ($role).toUpperAscii() &
-    " in a walled yard with one other cog, " & other & " (the " &
-    (if role == rParent: "CHILD" else: "PARENT") & ").\n"
+  result.add selection.introduction(me, ($role).toUpperAscii(), other,
+    (if role == rParent: "CHILD" else: "PARENT"))
   result.add """
 The yard is a grid. There are two fruit species, APPLE and BANANA, growing on
 TALL TREES and on low SHRUBS, plus loose fruit lying on the ground and a basket
@@ -478,6 +479,12 @@ proc parseOrder*(role: Role, payload: JsonNode): Order =
     result.guess = parseFruit(guessNode.getStr())
     result.hasGuess = true
 
+proc orderJson*(role: Role, order: Order): JsonNode =
+  %*{"job": (if role == rParent: $order.pjob else: $order.cjob),
+    "fruit": (if order.hasFruit: %($order.fruit) else: newJNull()),
+    "guess": (if order.hasGuess: %($order.guess) else: newJNull()),
+    "hunch": order.hunch, "notes": order.notes}
+
 proc paceDelayMs*(config: GameConfig, elapsedSeconds: float): int =
   ## `minTurnSeconds` floors the spacing between batch STARTS, so an episode
   ## issues at most 2 requests / minTurnSeconds and stays under the Bedrock
@@ -496,13 +503,16 @@ proc decideAll*(
   sim: Sim,
   seats: seq[int],
   prompts: seq[string],
-  scripted: seq[ScriptKind]
+  scripted: seq[ScriptKind],
+  selection: PromptSelection
 ): seq[Order] =
   ## One order per seat in `seats`, in order. NEVER RAISES: any failure falls
   ## back to the `caretaker` order so the episode always advances.
   ##
   ## Both open seats ride ONE batch — decisions are simultaneous, and a
   ## sequential pair would double the wall clock against the 720 s play budget.
+  client.attemptIds = default(array[2, seq[string]])
+  client.selectedAttemptIds = default(array[2, string])
   result = newSeq[Order](seats.len)
   var open: seq[int]
   for index, seat in seats:
@@ -522,7 +532,23 @@ proc decideAll*(
       var user = sim.userPrompt(seat, prompts[seat])
       if attempt > 0:
         user.add RetryHint
-      let request = client.requestFor(systemPrompt(sim, seat), user, seat)
+      let system = systemPrompt(sim, seat, selection)
+      let request = client.requestFor(system, user, seat)
+      let attemptId = "turn-" & $sim.turn & "-seat-" & $seat & "-attempt-" & $(attempt + 1)
+      client.attemptIds[seat].add(attemptId)
+      let captureDir = getEnv("DAYCARE_ATTEMPT_TRACE_DIR")
+      if captureDir.len > 0:
+        let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
+        writePrivate(captureDir / (attemptId & ".jsonl"), $(%*{
+          "schema_version": 1, "event_type": "attempt_started", "visibility": "private",
+          "attempt_id": attemptId, "turn": sim.turn, "seat": seat,
+          "source_revision": getEnv("DAYCARE_SOURCE_REVISION"),
+          "prompt_template": selection.promptMetadata(system, user),
+          "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+          "request": {"model": model, "body": parseJson(request.body),
+            "max_output_tokens": client.maxOutputTokens},
+          "platform_call_id": newJNull(), "behavior_logprobs": newJNull()
+        }) & "\n")
       batch.post(request.url, request.headers, request.body, $index)
     client.lastBatchSize = batch.len
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
@@ -530,19 +556,41 @@ proc decideAll*(
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
+      let attemptId = client.attemptIds[seat][^1]
+      var responseText, failure: string
+      var proposal = newJNull()
+      var normalized = newJNull()
+      var selected = false
       try:
-        let text = client.textOf(responses[position].response,
+        responseText = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        var order = parseOrder(sim.roleOf[seat], extractJsonObject(text))
+        proposal = extractJsonObject(responseText)
+        var order = parseOrder(sim.roleOf[seat], proposal)
         ## Reject illegal orders HERE so the retry carries the hint.
         sim.validateOrder(seat, order)
         order.source = if attempt == 0: osLlm else: osRetry
         order.latencyMs = latencyMs
         result[index] = order
+        normalized = orderJson(sim.roleOf[seat], order)
+        selected = true
+        client.selectedAttemptIds[seat] = attemptId
       except CatchableError as error:
+        failure = error.msg
         echo "daycare llm: seat ", seat, " attempt ", attempt, " failed: ",
           cleanText(error.msg, MaxErrorTextLen)
         stillOpen.add index
+      finally:
+        let captureDir = getEnv("DAYCARE_ATTEMPT_TRACE_DIR")
+        if captureDir.len > 0:
+          appendPrivate(captureDir / (attemptId & ".jsonl"), %*{
+            "schema_version": 1, "event_type": "attempt_finished", "visibility": "private",
+            "attempt_id": attemptId, "latency_ms": latencyMs,
+            "http_status": responses[position].response.code,
+            "raw_response": responses[position].response.body,
+            "response": responseText, "transport_error": responses[position].error,
+            "failure": failure, "parsed_action": proposal, "normalized_action": normalized,
+            "selected": selected, "platform_call_id": newJNull(), "behavior_logprobs": newJNull()
+          })
     open = stillOpen
   for index in open:
     let seat = seats[index]

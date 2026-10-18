@@ -10,7 +10,7 @@ import std/[json, strutils]
 import bitworld/spriteprotocol
 import sim_types, yard, sim_state, sim, global
 
-proc frameJson(frame: Frame): JsonNode =
+proc frameJson*(frame: Frame): JsonNode =
   var c = newJArray()
   for v in frame.c: c.add %v
   var g = newJArray()

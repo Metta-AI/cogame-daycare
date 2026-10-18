@@ -253,7 +253,7 @@ proc recordFrame(sim: var Sim) =
   sim.frames.add frame
   sim.scoreSeries.add [sim.tick, sim.cogs[0].score, sim.cogs[1].score]
 
-proc stepTick*(sim: var Sim) =
+proc stepTick*(sim: var Sim): array[2, Action] {.discardable.} =
   ## The nine numbered steps, in this order. Within a step, seats resolve in
   ## ascending slot order and sources in the fixed order tall trees then shrubs,
   ## each by (row, col) — which is `yard.sources` order.
@@ -335,6 +335,8 @@ proc stepTick*(sim: var Sim) =
     if sim.cogs[seat].fumbleCd > 0:
       dec sim.cogs[seat].fumbleCd
 
+  result = actions
+
   # 9. Record. The frame is stamped with the 0-BASED tick index the events of
   # this tick already carry, so `frames[i].t == i` and a seek is an array index.
   sim.recordFrame()
@@ -407,9 +409,10 @@ proc forfeit*(sim: var Sim) =
   sim.cogs[1].score = 0
   sim.settle("forfeit", "forfeit")
 
-proc playTurn*(sim: var Sim) =
+proc playTurn*(sim: var Sim): seq[array[2, Action]] {.discardable.} =
+  ## Return the kernel actions actually dispatched after each tick regrows sources.
   for _ in 1 .. sim.config.ticksPerTurn:
-    sim.stepTick()
+    result.add(sim.stepTick())
   sim.closeTurn()
 
 # ---------------------------------------------------------------------------
