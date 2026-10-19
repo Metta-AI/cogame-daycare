@@ -29,8 +29,9 @@
 import
   std/[json, math, os, strutils, times, unicode],
   bitworld/runtime,
+  prompts,
   curly,
-  sim_types, sim_state, sim, scripted, prompts, evidence
+  sim_types, sim_state, sim, scripted
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -54,8 +55,6 @@ type
     maxOutputTokens: int
     timeoutSeconds: int
     disabled*: bool
-    attemptIds*: array[2, seq[string]]
-    selectedAttemptIds*: array[2, string]
     lastBatchSize*: int
       ## Requests in the most recent `makeRequests` call. Decisions inside a
       ## turn are SIMULTANEOUS, so this is the number of open seats — 2 on turn
@@ -253,26 +252,18 @@ for the pair is """
   result.add $sim.config.parScore()
   result.add """.
 
-THERE IS NO MESSAGE CHANNEL IN EITHER DIRECTION. You cannot talk to the other
-cog and it cannot talk to you. The other cog is a different policy and it is
-deciding at the SAME MOMENT as you, without seeing your choice. Your `hunch` is
-seen only by spectators; your `notes` are seen only by you, next turn.
 """
+  result.add selection.communicationBriefing()
   if role == rParent:
-    result.add """
-THE CHILD'S PREFERENCE IS NEVER SHOWN TO YOU — infer it from where it walks,
-what it reaches for, and what it refuses to eat.
-
-Your jobs: `provide` (fetch a species and drop it next to the child),
+    result.add selection.preferenceBriefing(true) & "\n\n"
+    result.add """Your jobs: `provide` (fetch a species and drop it next to the child),
 `stock` (fetch a species and put it on the basket mat), `watch` (stand near the
 child and observe for a turn — it feeds nobody), `idle` (do nothing).
 You must also send a `guess`: which species you believe the child prefers.
 """
   else:
-    result.add """
-YOU KNOW YOUR OWN PREFERENCE and you are told it every turn. The parent is not.
-
-Your jobs: `seek` (go eat a species, refusing the other), `show` (stand under a
+    result.add selection.preferenceBriefing(false) & "\n\n"
+    result.add """Your jobs: `seek` (go eat a species, refusing the other), `show` (stand under a
 tall tree of a species and reach for it over and over — you can never pick it,
 but it is the only way to tell the parent what you want), `graze` (eat whatever
 is nearest, either species), `beg` (stand next to the parent), `idle`.
@@ -511,8 +502,6 @@ proc decideAll*(
   ##
   ## Both open seats ride ONE batch — decisions are simultaneous, and a
   ## sequential pair would double the wall clock against the 720 s play budget.
-  client.attemptIds = default(array[2, seq[string]])
-  client.selectedAttemptIds = default(array[2, string])
   result = newSeq[Order](seats.len)
   var open: seq[int]
   for index, seat in seats:
@@ -532,23 +521,7 @@ proc decideAll*(
       var user = sim.userPrompt(seat, prompts[seat])
       if attempt > 0:
         user.add RetryHint
-      let system = systemPrompt(sim, seat, selection)
-      let request = client.requestFor(system, user, seat)
-      let attemptId = "turn-" & $sim.turn & "-seat-" & $seat & "-attempt-" & $(attempt + 1)
-      client.attemptIds[seat].add(attemptId)
-      let captureDir = getEnv("DAYCARE_ATTEMPT_TRACE_DIR")
-      if captureDir.len > 0:
-        let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
-        writePrivate(captureDir / (attemptId & ".jsonl"), $(%*{
-          "schema_version": 1, "event_type": "attempt_started", "visibility": "private",
-          "attempt_id": attemptId, "turn": sim.turn, "seat": seat,
-          "source_revision": getEnv("DAYCARE_SOURCE_REVISION"),
-          "prompt_template": selection.promptMetadata(system, user),
-          "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-          "request": {"model": model, "body": parseJson(request.body),
-            "max_output_tokens": client.maxOutputTokens},
-          "platform_call_id": newJNull(), "behavior_logprobs": newJNull()
-        }) & "\n")
+      let request = client.requestFor(systemPrompt(sim, seat, selection), user, seat)
       batch.post(request.url, request.headers, request.body, $index)
     client.lastBatchSize = batch.len
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
@@ -556,41 +529,19 @@ proc decideAll*(
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
-      let attemptId = client.attemptIds[seat][^1]
-      var responseText, failure: string
-      var proposal = newJNull()
-      var normalized = newJNull()
-      var selected = false
       try:
-        responseText = client.textOf(responses[position].response,
+        let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        proposal = extractJsonObject(responseText)
-        var order = parseOrder(sim.roleOf[seat], proposal)
+        var order = parseOrder(sim.roleOf[seat], extractJsonObject(text))
         ## Reject illegal orders HERE so the retry carries the hint.
         sim.validateOrder(seat, order)
         order.source = if attempt == 0: osLlm else: osRetry
         order.latencyMs = latencyMs
         result[index] = order
-        normalized = orderJson(sim.roleOf[seat], order)
-        selected = true
-        client.selectedAttemptIds[seat] = attemptId
       except CatchableError as error:
-        failure = error.msg
         echo "daycare llm: seat ", seat, " attempt ", attempt, " failed: ",
           cleanText(error.msg, MaxErrorTextLen)
         stillOpen.add index
-      finally:
-        let captureDir = getEnv("DAYCARE_ATTEMPT_TRACE_DIR")
-        if captureDir.len > 0:
-          appendPrivate(captureDir / (attemptId & ".jsonl"), %*{
-            "schema_version": 1, "event_type": "attempt_finished", "visibility": "private",
-            "attempt_id": attemptId, "latency_ms": latencyMs,
-            "http_status": responses[position].response.code,
-            "raw_response": responses[position].response.body,
-            "response": responseText, "transport_error": responses[position].error,
-            "failure": failure, "parsed_action": proposal, "normalized_action": normalized,
-            "selected": selected, "platform_call_id": newJNull(), "behavior_logprobs": newJNull()
-          })
     open = stillOpen
   for index in open:
     let seat = seats[index]

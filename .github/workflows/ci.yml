@@ -158,12 +158,8 @@ jobs:
         run: |
           nim c -d:release --path:src -o:/tmp/daycare-export tools/export_posttrain.nim
           python3 tools/test_export_posttrain.py /tmp/daycare-export
+          python3 tools/test_prompt_games.py /tmp/daycare-bridge
 
-      - name: Published native prompt episodes
-        run: |
-          nim c -d:release --path:src -o:/tmp/daycare-game src/daycare.nim
-          nim c -d:release --path:src -o:/tmp/daycare-player src/daycare_player.nim
-          python3 tools/test_native_prompts.py /tmp/daycare-game /tmp/daycare-player /tmp/daycare-native --smoke
 
   # ---------------------------------------------------------------------
   # Packaging smoke: the production image builds, and one real episode runs

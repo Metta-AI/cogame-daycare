@@ -24,7 +24,7 @@ import
   mummy,
   mummy/routers,
   sim_types, yard, sim_state, sim, scripted, llm, replays, broadcast, global,
-  wire_constants, prompts, evidence
+  wire_constants, prompts
 
 const
   EmbeddedBroadcastHtml = spliceWireConstants(
@@ -185,10 +185,6 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     grace = state.config.shutdownGraceSeconds
     results = state.sim.resultsJson()
     replayData = replayJson(state.sim, results)
-    let tracePath = getEnv("DAYCARE_HOST_TRACE_PATH")
-    if tracePath.len > 0:
-      appendPrivate(tracePath, %*{"schema_version": 1, "event_type": "host_finished",
-        "visibility": "private", "results": results})
 
     ## Final frames go to the players BEFORE the artifacts are written: the
     ## hosted worker tears player pods down as soon as results.json exists.
@@ -332,19 +328,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           else:
             external[slot] = false
 
-      let tracePath = getEnv("DAYCARE_HOST_TRACE_PATH")
-      var decisionEvidence: array[2, JsonNode]
-      if tracePath.len > 0:
-        for slot in 0 .. 1:
-          let system = systemPrompt(simCopy, slot, state.selection)
-          let user = userPrompt(simCopy, slot, prompts[slot])
-          decisionEvidence[slot] = %*{
-            "schema_version": 1, "event_type": "host_decision", "visibility": "private",
-            "turn": turn, "tick": simCopy.tick, "seat": slot, "role": $simCopy.roleOf[slot],
-            "observation": simCopy.playerStateJson(slot),
-            "prompt_template": state.selection.promptMetadata(system, user),
-            "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}]
-          }
       let batchStart = epochTime()
       var orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds, state.selection)
       let actionDeadline = batchStart + config.llmTimeoutSeconds.float
@@ -381,30 +364,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             (if order.hasFruit: " " & $order.fruit else: ""),
             " source=", order.source,
             " at ", (epochTime() - gameStart).int, "s"
-          if tracePath.len > 0:
-            let installed = state.sim.orders[slot]
-            let source = $installed.source
-            decisionEvidence[slot]["source"] = %source
-            decisionEvidence[slot]["policy_origin"] = %(if external[slot]: "external"
-              elif scriptedKinds[slot] != skNone: "scripted"
-              elif installed.source == osFallback: "scripted-fallback"
-              elif installed.source == osScripted: "scripted-no-inference" else: "model")
-            decisionEvidence[slot]["attempt_ids"] = %client.attemptIds[slot]
-            decisionEvidence[slot]["selected_attempt_id"] = if not external[slot] and
-                installed.source in {osLlm, osRetry}:
-              %client.selectedAttemptIds[slot] else: newJNull()
-            decisionEvidence[slot]["proposal"] = orderJson(state.sim.roleOf[slot], orders[slot])
-            decisionEvidence[slot]["executed_action"] = orderJson(state.sim.roleOf[slot], installed)
-            appendPrivate(tracePath, decisionEvidence[slot])
-        let startTick = state.sim.tick
-        let actions = state.sim.playTurn()
-        if tracePath.len > 0:
-          var frames = newJArray()
-          for tick in startTick ..< state.sim.tick: frames.add(frameJson(state.sim.frames[tick]))
-          appendPrivate(tracePath, %*{
-            "schema_version": 1, "event_type": "host_turn", "visibility": "private",
-            "turn": turn, "start_tick": startTick, "end_tick": state.sim.tick,
-            "kernel_actions": kernelActionsJson(actions), "frames": frames})
+        state.sim.playTurn()
         state.broadcastLocked()
 
       ## `minTurnSeconds` floors the spacing between batch STARTS, so the
@@ -625,12 +585,6 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   for slot in 0 .. 1:
     policyNames[slot] = config.players[slot].name
   state.selection = promptSelection(parseJson(runtimeConfig.config))
-  let tracePath = getEnv("DAYCARE_HOST_TRACE_PATH")
-  if tracePath.len > 0:
-    writePrivate(tracePath, $(%*{"schema_version": 1, "event_type": "host_started",
-      "visibility": "private", "source_revision": getEnv("DAYCARE_SOURCE_REVISION"),
-      "prompt_selection": state.selection.selectionMetadata(), "seed": config.seed,
-      "variant": config.variantId()}) & "\n")
   state.config = config
   state.sim = initSim(config, policyNames)
   state.prompts = newSeq[string](2)

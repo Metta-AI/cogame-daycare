@@ -192,7 +192,7 @@ python3 scripts/art/gen_daycare_art.py     # everything else, plus the carry pos
 ## Training and prompt diversity
 
 See [TRAINING.md](TRAINING.md) for episode-stable wordings, full-order collection,
-private candidate exports, and native request evidence.
+seeded teacher exports, and complete-game validation.
 
 ## Tests
 

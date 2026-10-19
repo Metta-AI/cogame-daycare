@@ -5,9 +5,11 @@ Set `promptVariant` to `canonical`, `plain`, `numbered`, `questions`, or
 `promptSeed % 5`. Selection stays fixed across both roles, turns, and retries,
 and does not consume simulation randomness. `heldout-briefing` and
 `heldout-reference` are evaluation-only. The canonical prompt retains its
-original bytes; all variants share the original rules and strategic hints.
+original bytes. Alternatives vary identity, simultaneous communication rules,
+and role-specific knowledge. Game facts, job definitions, and strategic hints
+retain their meaning.
 
-The private provenance bank is `daycare-rules-v1`. It records exact system/user
+The private provenance bank is `daycare-rules-v2`. It records exact system/user
 hashes without placing provenance in model input or spectator replay. Role
 observations remain unchanged: parents cannot see the child's preference,
 orders, hunches, or notes; children cannot see the parent's guess or private text.
@@ -28,52 +30,34 @@ spectator hunches, and private notes. It collects both seats' orders before
 installing either, preserving simultaneous decisions. The hosted parser and
 validator determine the normalized order returned to the collector.
 
-## Private teacher candidates
+## Teacher exports
 
 ```bash
 nim c -d:release --path:src -o:/tmp/daycare-export tools/export_posttrain.nim
-/tmp/daycare-export /tmp/daycare-candidates 10 1 daycare mixed 4
+/tmp/daycare-export /tmp/daycare-examples 10 1 daycare mixed 0
 ```
 
-Run from a clean, committed checkout. `trajectories.jsonl` contains complete
-candidate episodes under the shared Coworld decision/episode contract.
-Candidates require independent review before training admission. Shared tooling
-splits by scenario seed family, keeping every variant and wording of that seed
-together. The exporter rejects held-out wording and existing output paths.
+Run from a clean, committed checkout. The original `train.jsonl`,
+`validation.jsonl`, and `manifest.json` format is preserved.
+Mixed selection cycles once per game through the five training wordings.
+Seed families exclude yard variant and wording; multiples of five enter
+validation. Held-out wordings and existing output paths are rejected.
+Output directories are private.
 
-The teacher is the published caretaker in seat zero and stubborn policy in seat
-one, including when roles swap. No provider request, call ID, or behavior log
-probability is invented. `manifest.json` records source revision and results.
-`execution.jsonl` joins each pair of decisions to the actual kernel actions
-and state frames from all 60 ticks. Kernel actions are commands dispatched to
-the simulator; they do not claim that a blocked move or failed pick succeeded.
-All candidate artifacts are private files with mode 0600.
-
-## Native evidence
-
-Set `DAYCARE_HOST_TRACE_PATH`, `DAYCARE_ATTEMPT_TRACE_DIR`, and
-`DAYCARE_SOURCE_REVISION` to retain private evidence. Attempts record exact
-request bodies, model, retries, raw responses, failures, and normalized orders.
-Both seats still share one request batch per attempt. Host records distinguish
-scripted, external, fallback, and model decisions and retain per-turn kernel
-commands and state frames. Skipped calls produce no fabricated attempts.
+The teacher remains caretaker in seat zero and stubborn in seat one, including
+swapped roles. Both orders are parsed and validated before either is installed.
+Each export covers all 15 turns and 900 ticks. Wording metadata records the
+selected variant and rendered message hashes.
 
 ```bash
-python3 tools/test_native_prompts.py /tmp/daycare /tmp/daycare-player /tmp/daycare-native
 python3 tools/test_export_posttrain.py /tmp/daycare-export
+python3 tools/test_prompt_games.py /tmp/daycare-train-bridge
 ```
 
-The native workflow runs real host/player processes against a closed local
-inference endpoint with unchanged manifest budgets. It checks all four variants
-and seven additional wordings; `--smoke` covers canonical standard and swapped
-roles. It joins private decisions to replay orders and all 900 state frames,
-while checking role boundaries and strategy separation. The existing replay
-remains a spectator artifact, including its secret and order history.
-
-These checks establish matched trajectory parity and evidence integrity.
-They do not demonstrate successful model inference, better learning, or
-resistance to policy collapse. Evaluate frozen base/canonical/mixed checkpoints
-on matched game seeds and opponents separately.
+Complete-game checks cover all four variants, private role information,
+independent parent guesses, note persistence, and normalized orders.
+They check mechanics and protocol behavior, not improved learning or resistance
+to policy collapse. Model comparisons require separate matched evaluations.
 
 ## Numeric training
 
