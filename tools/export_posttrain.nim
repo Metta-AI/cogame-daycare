@@ -42,9 +42,13 @@ when isMainModule:
     trainRows: seq[string]
     validationRows: seq[string]
     runs = newJArray()
+    wordingCounts: array[2, int]
   for seed in firstSeed ..< firstSeed + games:
     var wording = selection
-    if wording.variant == pvMixed: wording.seed += seed - firstSeed
+    let partition = ord(seed mod 5 == 0)
+    if wording.variant == pvMixed:
+      wording.seed += wordingCounts[partition]
+    inc wordingCounts[partition]
     var config = defaultGameConfig()
     let runtimeConfig = copy(variantConfig)
     runtimeConfig["tokens"] = %*["t0", "t1"]
@@ -78,7 +82,7 @@ when isMainModule:
           parsed.guess == teacher.guess and
           parsed.hunch == teacher.hunch and parsed.notes == teacher.notes
         rows.add($(%*{
-          "episode_id": "daycare-" & variant & "-" & $seed,
+          "episode_id": "daycare-" & variant & "-" & $seed & "-" & $wording.selectedVariant,
           "seed": "daycare-" & $seed,
           "decision_id": rows.len,
           "prompt": [
