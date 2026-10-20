@@ -24,7 +24,7 @@ import
   mummy,
   mummy/routers,
   sim_types, yard, sim_state, sim, scripted, llm, replays, broadcast, global,
-  wire_constants
+  wire_constants, prompts
 
 const
   EmbeddedBroadcastHtml = spliceWireConstants(
@@ -70,6 +70,7 @@ const
 
 type
   GameState = object
+    selection: PromptSelection
     config: GameConfig
     sim: Sim
     prompts: seq[string]
@@ -328,7 +329,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             external[slot] = false
 
       let batchStart = epochTime()
-      var orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds)
+      var orders = client.decideAll(simCopy, @[0, 1], prompts, scriptedKinds, state.selection)
       let actionDeadline = batchStart + config.llmTimeoutSeconds.float
       while epochTime() < actionDeadline:
         var waiting = false
@@ -583,6 +584,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   var policyNames: array[2, string]
   for slot in 0 .. 1:
     policyNames[slot] = config.players[slot].name
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config, policyNames)
   state.prompts = newSeq[string](2)

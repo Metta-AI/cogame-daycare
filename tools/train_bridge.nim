@@ -3,7 +3,7 @@
 ## daycare-train-bridge coworld_manifest_template.json [VARIANT]
 
 import std/[json, os]
-import daycare/[llm, scripted, sim, sim_types]
+import daycare/[llm, scripted, sim, sim_types, prompts]
 
 const OperatorPrompt = "Cooperate to maximize the child's food score while respecting what each role can observe."
 const ActionWidth = 12
@@ -14,10 +14,10 @@ proc seedOf(value: string): int =
     hash = (hash xor uint32(ord(ch))) * 16777619'u32
   int(hash and 0x7fffffff'u32)
 
-proc decision(game: Sim, seat, id: int): JsonNode =
+proc decision(game: Sim, seat, id: int, selection: PromptSelection, textMode: bool): JsonNode =
   let required = if game.roleOf[seat] == rParent:
     %*["job", "guess"] else: %*["job"]
-  %*{
+  result = %*{
     "kind": "decision",
     "game": "daycare",
     "decision_id": id,
@@ -27,13 +27,22 @@ proc decision(game: Sim, seat, id: int): JsonNode =
     "semantic_view": game.playerStateJson(seat),
     "inbox": [],
     "messages": [
-      {"role": "system", "content": systemPrompt(game, seat)},
+      {"role": "system", "content": systemPrompt(game, seat, selection)},
       {"role": "user", "content": userPrompt(game, seat, OperatorPrompt)}
     ],
     "speech_messages": [],
     "action_schema": {"type": "object", "required": required},
     "typed_question": newJNull()
   }
+
+  if textMode:
+    result["semantic_view"]["prompt_template"] = selection.promptMetadata(
+      result["messages"][0]["content"].getStr(), result["messages"][1]["content"].getStr())
+    result["action_schema"]["properties"] = %*{
+      "job": {"type": "string"}, "fruit": {"type": ["string", "null"]},
+      "guess": {"type": ["string", "null"]},
+      "hunch": {"type": "string", "maxLength": MaxHunchLen},
+      "notes": {"type": "string", "maxLength": MaxNotesLen}}
 
 proc encoding(game: Sim, seat, id: int): JsonNode =
   let state = game.playerStateJson(seat)
@@ -95,15 +104,19 @@ proc encoding(game: Sim, seat, id: int): JsonNode =
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len notin 1 .. 2:
-    quit("usage: daycare-train-bridge MANIFEST [VARIANT]", 1)
-  let variant = if args.len == 2: args[1] else: "daycare"
+  if args.len notin 1 .. 3:
+    quit("usage: daycare-train-bridge MANIFEST [VARIANT [text]]", 1)
+  let textMode = args.len == 3
+  if textMode: doAssert args[2] == "text"
+  let variant = if args.len >= 2: args[1] else: "daycare"
   let manifest = parseFile(args[0])
   var variantConfig: JsonNode
   for entry in manifest["variants"]:
     if entry["id"].getStr() == variant:
       variantConfig = entry["game_config"]
   doAssert not variantConfig.isNil, "unknown variant: " & variant
+  var selection: PromptSelection
+  var pending: array[2, Order]
   var game: Sim
   var seat = 0
   var id = 0
@@ -113,6 +126,11 @@ when isMainModule:
     case request["kind"].getStr()
     of "reset":
       doAssert request["players"].getInt() == 2
+      selection = if textMode: promptSelection(request) else: PromptSelection()
+      let split = if request.hasKey("split"): request["split"].getStr() else: "train"
+      doAssert split in ["train", "validation", "test"]
+      if split == "train" and selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
+        raise newException(ValueError, "held-out wording is evaluation-only")
       var config = defaultGameConfig()
       let runtimeConfig = copy(variantConfig)
       runtimeConfig["tokens"] = %*["t0", "t1"]
@@ -122,7 +140,7 @@ when isMainModule:
       game.turn = 1
       seat = 0
       id = 0
-      response = game.decision(seat, id)
+      response = game.decision(seat, id, selection, textMode)
     of "encode":
       doAssert not game.done
       response = game.encoding(seat, id)
@@ -136,15 +154,32 @@ when isMainModule:
       }
       if order.hasFruit: action["fruit"] = %($order.fruit)
       if role == rParent: action["guess"] = %($order.guess)
+      if textMode:
+        action["fruit"] = if order.hasFruit: %($order.fruit) else: newJNull()
+        action["guess"] = if order.hasGuess: %($order.guess) else: newJNull()
+        action["hunch"] = %order.hunch
+        action["notes"] = %order.notes
       response = %*{"response": $action}
     of "step":
       doAssert not game.done and request["decision_id"].getInt() == id
-      let action = parseJson(request["response"].getStr())
+      let action = extractJsonObject(request["response"].getStr())
       var order = parseOrder(game.roleOf[seat], action)
       order.source = osLlm
-      game.applyOrder(seat, order)
+      game.validateOrder(seat, order)
+      var accepted = action
+      if textMode:
+        accepted = %*{
+          "job": (if game.roleOf[seat] == rParent: $order.pjob else: $order.cjob),
+          "fruit": (if order.hasFruit: %($order.fruit) else: newJNull()),
+          "guess": (if order.hasGuess: %($order.guess) else: newJNull()),
+          "hunch": order.hunch, "notes": order.notes}
+        pending[seat] = order
+      else:
+        game.applyOrder(seat, order)
       inc seat
       if seat == 2:
+        if textMode:
+          for slot in 0 .. 1: game.applyOrder(slot, pending[slot])
         game.playTurn()
         seat = 0
         if game.turn == game.config.turns:
@@ -166,8 +201,8 @@ when isMainModule:
         observation = %*{"kind": "terminal", "scores": scores,
           "utilities": utilities}
       else:
-        observation = game.decision(seat, id)
-      response = %*{"kind": "accepted", "action": action,
+        observation = game.decision(seat, id, selection, textMode)
+      response = %*{"kind": "accepted", "action": accepted,
         "observation": observation}
     else:
       raise newException(ValueError, "unknown command: " & request["kind"].getStr())

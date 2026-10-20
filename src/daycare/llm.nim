@@ -29,6 +29,7 @@
 import
   std/[json, math, os, strutils, times, unicode],
   bitworld/runtime,
+  prompts,
   curly,
   sim_types, sim_state, sim, scripted
 
@@ -212,13 +213,12 @@ proc historyTable(sim: Sim, role: Role): string =
     lines.add row
   "PER-TURN HISTORY:\n" & lines.join("\n")
 
-proc systemPrompt*(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
   let role = sim.roleOf[seat]
   let me = sim.names[seat].toUpperAscii()
   let other = sim.names[1 - seat].toUpperAscii()
-  result.add "You are " & me & ", the " & ($role).toUpperAscii() &
-    " in a walled yard with one other cog, " & other & " (the " &
-    (if role == rParent: "CHILD" else: "PARENT") & ").\n"
+  result.add selection.introduction(me, ($role).toUpperAscii(), other,
+    (if role == rParent: "CHILD" else: "PARENT"))
   result.add """
 The yard is a grid. There are two fruit species, APPLE and BANANA, growing on
 TALL TREES and on low SHRUBS, plus loose fruit lying on the ground and a basket
@@ -252,26 +252,18 @@ for the pair is """
   result.add $sim.config.parScore()
   result.add """.
 
-THERE IS NO MESSAGE CHANNEL IN EITHER DIRECTION. You cannot talk to the other
-cog and it cannot talk to you. The other cog is a different policy and it is
-deciding at the SAME MOMENT as you, without seeing your choice. Your `hunch` is
-seen only by spectators; your `notes` are seen only by you, next turn.
 """
+  result.add selection.communicationBriefing()
   if role == rParent:
-    result.add """
-THE CHILD'S PREFERENCE IS NEVER SHOWN TO YOU — infer it from where it walks,
-what it reaches for, and what it refuses to eat.
-
-Your jobs: `provide` (fetch a species and drop it next to the child),
+    result.add selection.preferenceBriefing(true) & "\n\n"
+    result.add """Your jobs: `provide` (fetch a species and drop it next to the child),
 `stock` (fetch a species and put it on the basket mat), `watch` (stand near the
 child and observe for a turn — it feeds nobody), `idle` (do nothing).
 You must also send a `guess`: which species you believe the child prefers.
 """
   else:
-    result.add """
-YOU KNOW YOUR OWN PREFERENCE and you are told it every turn. The parent is not.
-
-Your jobs: `seek` (go eat a species, refusing the other), `show` (stand under a
+    result.add selection.preferenceBriefing(false) & "\n\n"
+    result.add """Your jobs: `seek` (go eat a species, refusing the other), `show` (stand under a
 tall tree of a species and reach for it over and over — you can never pick it,
 but it is the only way to tell the parent what you want), `graze` (eat whatever
 is nearest, either species), `beg` (stand next to the parent), `idle`.
@@ -478,6 +470,12 @@ proc parseOrder*(role: Role, payload: JsonNode): Order =
     result.guess = parseFruit(guessNode.getStr())
     result.hasGuess = true
 
+proc orderJson*(role: Role, order: Order): JsonNode =
+  %*{"job": (if role == rParent: $order.pjob else: $order.cjob),
+    "fruit": (if order.hasFruit: %($order.fruit) else: newJNull()),
+    "guess": (if order.hasGuess: %($order.guess) else: newJNull()),
+    "hunch": order.hunch, "notes": order.notes}
+
 proc paceDelayMs*(config: GameConfig, elapsedSeconds: float): int =
   ## `minTurnSeconds` floors the spacing between batch STARTS, so an episode
   ## issues at most 2 requests / minTurnSeconds and stays under the Bedrock
@@ -496,7 +494,8 @@ proc decideAll*(
   sim: Sim,
   seats: seq[int],
   prompts: seq[string],
-  scripted: seq[ScriptKind]
+  scripted: seq[ScriptKind],
+  selection: PromptSelection
 ): seq[Order] =
   ## One order per seat in `seats`, in order. NEVER RAISES: any failure falls
   ## back to the `caretaker` order so the episode always advances.
@@ -522,7 +521,7 @@ proc decideAll*(
       var user = sim.userPrompt(seat, prompts[seat])
       if attempt > 0:
         user.add RetryHint
-      let request = client.requestFor(systemPrompt(sim, seat), user, seat)
+      let request = client.requestFor(systemPrompt(sim, seat, selection), user, seat)
       batch.post(request.url, request.headers, request.body, $index)
     client.lastBatchSize = batch.len
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)

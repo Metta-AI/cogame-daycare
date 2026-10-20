@@ -189,6 +189,11 @@ python3 scripts/art/split_cog_sheet.py     # sheet -> the two cog kits
 python3 scripts/art/gen_daycare_art.py     # everything else, plus the carry poses
 ```
 
+## Training and prompt diversity
+
+See [TRAINING.md](TRAINING.md) for episode-stable wordings, full-order collection,
+seeded teacher exports, and complete-game validation.
+
 ## Tests
 
 The sandbox that wrote this cannot run Docker; `.github/workflows/ci.yml` is the
