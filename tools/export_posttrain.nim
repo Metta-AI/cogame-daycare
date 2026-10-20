@@ -82,7 +82,8 @@ when isMainModule:
           parsed.guess == teacher.guess and
           parsed.hunch == teacher.hunch and parsed.notes == teacher.notes
         rows.add($(%*{
-          "episode_id": "daycare-" & variant & "-" & $seed & "-" & $wording.selectedVariant,
+          "episode_id": "daycare-" & variant & "-" & $seed & "-" & $wording.variant & "-" &
+            $wording.selectedVariant & "-" & $wording.seed,
           "seed": "daycare-" & $seed,
           "decision_id": rows.len,
           "prompt": [

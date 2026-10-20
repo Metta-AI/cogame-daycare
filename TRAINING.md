@@ -40,8 +40,8 @@ nim c -d:release --path:src -o:/tmp/daycare-export tools/export_posttrain.nim
 Run from a clean, committed checkout. The original `train.jsonl`,
 `validation.jsonl`, and `manifest.json` format is preserved.
 Mixed selection cycles the five training wordings separately within each split,
-so validation does not remove a wording from training. Episode IDs include the
-selected wording to distinguish matched collections of the same scenario.
+so validation does not remove a wording from training. Episode IDs include requested selection, resolved wording, and prompt seed
+to distinguish matched collections of the same scenario.
 Seed families exclude yard variant and wording; multiples of five enter
 validation. Held-out wordings and existing output paths are rejected.
 Output directories are private.
