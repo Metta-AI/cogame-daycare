@@ -31,7 +31,7 @@ import
   bitworld/runtime,
   prompts,
   curly,
-  sim_types, sim_state, sim, scripted
+  sim_types, sim_state, sim, scripted, training_capture, text_safety
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -55,6 +55,8 @@ type
     maxOutputTokens: int
     timeoutSeconds: int
     disabled*: bool
+    capture*: RuntimeCapture
+    captured*: seq[CapturedDecision]
     lastBatchSize*: int
       ## Requests in the most recent `makeRequests` call. Decisions inside a
       ## turn are SIMULTANEOUS, so this is the number of open seats — 2 on turn
@@ -445,6 +447,12 @@ proc parseOrder*(role: Role, payload: JsonNode): Order =
   ## Extra keys are ignored. A `guess` that disagrees with the `fruit` being
   ## delivered is ACCEPTED AS WRITTEN — testing a hypothesis by delivering the
   ## other species must stay expressible.
+  # Validate only consumed strings, before cleaning can discard invalid bytes.
+  # Unknown/ignored fields retain the native parser's existing behavior.
+  for key in ["hunch", "notes"]:
+    let value = payload{key}
+    if value != nil and value.kind == JString and not scalarUtf8(value.getStr()):
+      raise newException(DaycareError, key & " must contain Unicode scalar UTF-8")
   result.hunch = cleanHunch(payload{"hunch"}.getStr())
   result.notes = cleanNotes(payload{"notes"}.getStr())
   let jobNode = payload{"job"}
@@ -503,6 +511,12 @@ proc decideAll*(
   ## Both open seats ride ONE batch — decisions are simultaneous, and a
   ## sequential pair would double the wall clock against the 720 s play budget.
   result = newSeq[Order](seats.len)
+  if client.capture != nil:
+    client.captured = newSeq[CapturedDecision](2)
+    for seat in seats:
+      client.captured[seat] = client.capture.beginDecision(
+        "turn-" & $sim.turn & "-seat-" & $seat, sim.policyNames[seat],
+        sim.playerStateJson(seat), selection.selectionMetadata(), sim.nativeStateHash(seat))
   var open: seq[int]
   for index, seat in seats:
     let kind = scripted[seat]
@@ -522,6 +536,9 @@ proc decideAll*(
       if attempt > 0:
         user.add RetryHint
       let request = client.requestFor(systemPrompt(sim, seat, selection), user, seat)
+      if client.capture != nil:
+        client.captured[seat].beginAttempt()
+        client.captured[seat].requested(request.body, request.headers)
       batch.post(request.url, request.headers, request.body, $index)
     client.lastBatchSize = batch.len
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
@@ -529,16 +546,25 @@ proc decideAll*(
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
+      if client.capture != nil:
+        if responses[position].error.len > 0:
+          client.captured[seat].transportFailed(responses[position].error, latencyMs)
+        else:
+          client.captured[seat].received(responses[position].response, latencyMs)
       try:
         let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
+        if client.capture != nil: client.captured[seat].replyText(text)
         var order = parseOrder(sim.roleOf[seat], extractJsonObject(text))
+        if client.capture != nil:
+          client.captured[seat].parsedProposal(orderJson(sim.roleOf[seat], order))
         ## Reject illegal orders HERE so the retry carries the hint.
         sim.validateOrder(seat, order)
         order.source = if attempt == 0: osLlm else: osRetry
         order.latencyMs = latencyMs
         result[index] = order
       except CatchableError as error:
+        if client.capture != nil: client.captured[seat].rejectedAttempt(error.msg)
         echo "daycare llm: seat ", seat, " attempt ", attempt, " failed: ",
           cleanText(error.msg, MaxErrorTextLen)
         stillOpen.add index

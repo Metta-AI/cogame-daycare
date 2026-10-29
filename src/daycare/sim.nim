@@ -5,7 +5,7 @@
 ## split modules, so `import daycare/sim` still sees everything.
 
 import std/[json]
-import sim_types, yard, sim_state, events, kernel, sim_config
+import sim_types, yard, sim_state, events, kernel, sim_config, text_safety
 export sim_types, yard, sim_state, events, kernel, sim_config
 
 const
@@ -31,6 +31,8 @@ proc validateOrder*(sim: Sim, seat: int, order: Order) =
   ## Every field either baseline emits is inside its declared enum for its role
   ## BY CONSTRUCTION; this is the assertion that makes that true of an LLM reply
   ## too, and the retry hint is built from the failure.
+  if not scalarUtf8(order.hunch) or not scalarUtf8(order.notes):
+    raise newException(DaycareError, "order text must contain Unicode scalar UTF-8")
   let role = sim.roleOf[seat]
   if requiresFruit(role, order) and not order.hasFruit:
     raise newException(DaycareError,
@@ -50,10 +52,11 @@ proc boundaryTick*(sim: Sim): int =
 proc applyOrder*(sim: var Sim, seat: int, order0: Order) =
   ## Install a seat's standing order for the turn about to be played.
   ## Decisions are SIMULTANEOUS: neither seat sees the other's order.
+  # Every preflight check precedes cleaning and any state/event mutation.
+  sim.validateOrder(seat, order0)
   var order = order0
   order.hunch = cleanHunch(order.hunch)
   order.notes = cleanNotes(order.notes)
-  sim.validateOrder(seat, order)
   sim.orders[seat] = order
   sim.lastOrders[seat] = order
   let role = sim.roleOf[seat]

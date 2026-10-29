@@ -24,7 +24,7 @@ import
   mummy,
   mummy/routers,
   sim_types, yard, sim_state, sim, scripted, llm, replays, broadcast, global,
-  wire_constants, prompts
+  wire_constants, prompts, training_capture
 
 const
   EmbeddedBroadcastHtml = spliceWireConstants(
@@ -277,6 +277,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       return
 
     let client = newLlmClient(config)
+    let capture = newRuntimeCapture(config, runtimeConfig.resultsUri, runtimeConfig.replayUri)
+    client.capture = capture
 
     ## The game container is NOT given COWORLD_TIMEOUT_SECONDS (only the worker
     ## sidecar is), so when the env is silent assume the configured platform
@@ -364,6 +366,18 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             (if order.hasFruit: " " & $order.fruit else: ""),
             " source=", order.source,
             " at ", (epochTime() - gameStart).int, "s"
+        if capture != nil:
+          for slot in 0 .. 1:
+            var ownEvent = newJNull()
+            for index in countdown(state.sim.events.high, 0):
+              let event = state.sim.events[index]
+              if event{"k"}.getStr() == "order" and event{"seat"}.getInt(-1) == slot and event{"turn"}.getInt() == turn:
+                ownEvent = copy(event)
+                break
+            let installed = state.sim.lastOrders[slot]
+            capture.applied(client.captured[slot], slot,
+              orderJson(state.sim.roleOf[slot], installed), ownEvent,
+              $installed.source, state.sim.nativeStateHash(slot))
         state.sim.playTurn()
         state.broadcastLocked()
 
@@ -378,6 +392,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       if not state.sim.done:
         state.sim.settle("complete", "turn_limit")
       state.broadcastLocked()
+    if capture != nil:
+      withLock stateLock: capture.finishCapture(state.sim.resultsJson())
     finishEpisode(runtimeConfig)
 
 var gameThread: Thread[RuntimeConfig]
